@@ -6,7 +6,7 @@ It treats a paper as more than a sequence of paragraphs. The project will preser
 
 ## Status
 
-Version 0.1 is deliberately small. It imports Markdown papers, detects their title, abstract, and sections, and writes a reviewable reading guide as JSON and Markdown. Translation, JATS/DOCX import, figure handling, terminology research, bilingual exports, and PDF/DOCX typesetting are planned next.
+Version 0.2 imports Markdown, TXT, and JATS XML papers; retains JATS XML alongside normalized review Markdown; inventories figures, tables, displayed equations, citations, and references; and writes a reviewable reading guide as JSON and Markdown. Translation, DOCX/PDF import, figure binaries, terminology research, bilingual exports, and PDF/DOCX typesetting are planned next.
 
 ## Quick start
 
@@ -18,7 +18,7 @@ source .venv/bin/activate
 python -m pip install -e '.[dev]'
 
 paperweaver init my-paper --title "A study"
-paperweaver import my-paper examples/sample-paper.md
+paperweaver import my-paper examples/sample-paper.md  # or a JATS .xml article
 paperweaver guide my-paper
 ```
 
@@ -38,6 +38,7 @@ my-paper/
 - Paper title and source metadata.
 - Abstract (when marked by an `## Abstract` heading).
 - Section map and word counts.
+- A structure inventory for JATS figures, tables, equations, citations, and references.
 - Reading questions that distinguish the research question, method, evidence, limits, and contribution.
 
 The guide is intentionally an orientation aid, not an invented summary or a substitute for reading the source.
@@ -45,7 +46,7 @@ The guide is intentionally an orientation aid, not an invented summary or a subs
 ## Roadmap
 
 1. Markdown foundation and reviewable reading guide.
-2. JATS, DOCX, and PDF-aware import with figure/table/citation inventory.
+2. DOCX and PDF-aware import with figure/table/citation inventory.
 3. Terminology evidence and context-aware Chinese translation.
 4. Translation critique, bilingual comparison, and selective revision.
 5. Chinese academic PDF/DOCX/EPUB rendering with reflowed figures and tables.
@@ -53,7 +54,7 @@ The guide is intentionally an orientation aid, not an invented summary or a subs
 
 ## Relationship to ContextWeaver
 
-PaperWeaver is a separate project. It may later reuse ideas such as append-only revision history, source evidence, and model-independent adapters, but it does not vendor or duplicate ContextWeaver code. Any future shared component will have its own license and provenance review.
+PaperWeaver is a separate project from [ContextWeaver](https://github.com/FIERsity/ContextWeaver). Each has its own Git history, issues, releases, CI, dependencies, and project directory. PaperWeaver may later reuse ideas such as append-only revision history, source evidence, and model-independent adapters, but it does not vendor or duplicate ContextWeaver code. A shared implementation, if justified, must be extracted into a separately versioned and licensed package rather than added as a Git submodule or copied between repositories.
 
 ## Contributing
 

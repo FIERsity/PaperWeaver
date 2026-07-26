@@ -17,7 +17,7 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--title", required=True)
     init.add_argument("--source-language", default="en")
     init.add_argument("--target-language", default="zh-CN")
-    imported = commands.add_parser("import", help="Import a Markdown or TXT paper")
+    imported = commands.add_parser("import", help="Import a Markdown, TXT, or JATS XML paper")
     imported.add_argument("project", type=Path)
     imported.add_argument("source", type=Path)
     guide = commands.add_parser("guide", help="Write source-grounded reading guide artifacts")

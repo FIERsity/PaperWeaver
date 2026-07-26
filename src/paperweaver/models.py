@@ -25,6 +25,18 @@ class PaperSource(Record):
     path: str
     sha256: str
     format: str
+    original_path: str | None = None
+
+
+@dataclass(frozen=True)
+class PaperInventory(Record):
+    source_format: str
+    figures: int = 0
+    tables: int = 0
+    equations: int = 0
+    citations: int = 0
+    references: int = 0
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -43,3 +55,4 @@ class ReadingGuide(Record):
     abstract: str | None
     sections: list[PaperSection] = field(default_factory=list)
     questions: list[str] = field(default_factory=list)
+    inventory: PaperInventory | None = None
