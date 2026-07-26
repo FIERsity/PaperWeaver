@@ -9,7 +9,7 @@ PaperWeaver has three deliberately separate layers:
 
 The canonical state is transparent JSONL and Markdown under a project directory. The source is authoritative. A Passage ID is a SHA-256-derived value over source digest, section title, source ordinal, and normalized text. Translation revisions link to their predecessor and never overwrite history. Guides are derived artifacts and must identify uncertainty rather than invent research conclusions.
 
-The Markdown parser is intentionally conservative. It recognizes ATX headings and an `Abstract` section. The JATS importer retains the original XML, writes normalized Markdown for inspection, and produces a transparent inventory of figures, tables, displayed equations, bibliographic citations, references, and import limits. It preserves caption text as explicit markers but does not fetch figure binaries or claim mathematical layout fidelity. Future DOCX/PDF importers must satisfy the same structure-before-semantics rule.
+The Markdown parser is intentionally conservative. It recognizes ATX headings and an `Abstract` section. Extracted TXT sources may contain common numbered paper headings such as `4 Data and methods`; these are normalized to reviewable Markdown headings, while title metadata in a `TITLE:` line becomes the document title. The JATS importer retains the original XML, writes normalized Markdown for inspection, and produces a transparent inventory of figures, tables, displayed equations, bibliographic citations, references, and import limits. It preserves caption text as explicit markers but does not fetch figure binaries or claim mathematical layout fidelity. Future DOCX/PDF importers must satisfy the same structure-before-semantics rule.
 
 ## Translation and evidence
 

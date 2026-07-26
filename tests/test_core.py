@@ -49,6 +49,28 @@ def test_import_never_replaces_a_different_source(tmp_path: Path) -> None:
         import_paper(project, second)
 
 
+def test_plain_text_numbered_sections_become_reviewable_markdown(tmp_path: Path) -> None:
+    source = tmp_path / "paper.txt"
+    source.write_text("A paper title\n\n1 Introduction\n\nQuestion.\n\n2 Data and methods\n\nMethod.\n", encoding="utf-8")
+    project = tmp_path / "project"
+    init_project(project, "Fallback", "en", "zh-CN")
+    imported = import_paper(project, source)
+    assert imported.title == "A paper title"
+    normalised = (project / "source" / "article.md").read_text(encoding="utf-8")
+    assert "## 1 Introduction" in normalised
+    assert "## 2 Data and methods" in normalised
+    assert [item.title for item in parse_sections(normalised)] == ["1 Introduction", "2 Data and methods"]
+
+
+def test_plain_text_title_metadata_is_preferred(tmp_path: Path) -> None:
+    source = tmp_path / "paper.txt"
+    source.write_text("TITLE: Actual title\n\n1 Introduction\n\nText.\n", encoding="utf-8")
+    project = tmp_path / "project"
+    init_project(project, "Fallback", "en", "zh-CN")
+    assert import_paper(project, source).title == "Actual title"
+    assert build_reading_guide(project).title == "Actual title"
+
+
 def test_cli_workflow(tmp_path: Path) -> None:
     source = tmp_path / "paper.txt"
     source.write_text("# Paper\n\n## Abstract\n\nText.\n", encoding="utf-8")

@@ -6,7 +6,7 @@ It treats a paper as more than a sequence of paragraphs. The project will preser
 
 ## Status
 
-Version 0.3 imports Markdown, TXT, and JATS XML papers; retains JATS XML alongside normalized review Markdown; inventories figures, tables, displayed equations, citations, and references; creates stable paper Passages and TranslationUnits; preserves append-only translation revisions; and writes source-grounded reading artifacts. The included mock translator makes the complete workflow testable without an API key. Online adapters, DOCX/PDF import, figure binaries, terminology research, and publication typesetting are planned next.
+Version 0.3 imports Markdown, TXT, and JATS XML papers; recognizes common numbered section headings in extracted academic TXT; retains JATS XML alongside normalized review Markdown; inventories figures, tables, displayed equations, citations, and references; creates stable paper Passages and TranslationUnits; preserves append-only translation revisions; and writes source-grounded reading artifacts. The included mock translator makes the complete workflow testable without an API key. Online adapters, DOCX/PDF import, figure binaries, terminology research, and publication typesetting are planned next.
 
 ## Quick start
 

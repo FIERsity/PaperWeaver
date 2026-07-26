@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -38,8 +37,9 @@ def import_paper(root: Path, source: Path) -> PaperSource:
         original = root / "source" / "original.xml"
         original.write_bytes(data)
     else:
-        shutil.copyfile(source, destination)
-        title = _first_heading(data.decode("utf-8")) or _require_project(root).title
+        text = data.decode("utf-8")
+        destination.write_text(_normalise_text_source(text, source_format), encoding="utf-8")
+        title = _first_heading(text) or _title_from_text(text) or _require_project(root).title
         original = None
         inventory = PaperInventory(source_format)
     record = PaperSource(
@@ -168,6 +168,32 @@ def _first(element: ET.Element, name: str) -> ET.Element | None:
 
 def _text(element: ET.Element | None) -> str:
     return " ".join("".join(element.itertext()).split()) if element is not None else ""
+
+
+def _normalise_text_source(text: str, source_format: str) -> str:
+    if source_format not in {"txt", "text"}:
+        return text
+    lines = []
+    for line in text.splitlines():
+        if line.strip().startswith("TITLE:") and line.strip().removeprefix("TITLE:").strip():
+            lines.append(f"# {line.strip().removeprefix('TITLE:').strip()}")
+            continue
+        match = re.match(r"^(\d+(?:\.\d+)*)\s+([A-Za-z][A-Za-z ,&'’()\-]{2,80})$", line.strip())
+        if match and not match.group(2).endswith((".", ",", ";", ":")):
+            lines.append(f"## {match.group(1)} {match.group(2)}")
+        else:
+            lines.append(line)
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+
+
+def _title_from_text(text: str) -> str | None:
+    for line in text.splitlines():
+        value = line.strip()
+        if value.startswith("TITLE:") and value.removeprefix("TITLE:").strip():
+            return value.removeprefix("TITLE:").strip()
+        if value and not value.startswith(("TITLE:", "YEAR:", "DOI:", "URL:")) and len(value) < 180:
+            return value
+    return None
 
 
 def _first_heading(text: str) -> str | None:
