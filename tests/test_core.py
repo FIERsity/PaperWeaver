@@ -109,7 +109,9 @@ def test_jats_import_retains_structure_and_inventory(tmp_path: Path) -> None:
     normalized = (project / "source" / "article.md").read_text(encoding="utf-8")
     assert "[Figure: Fig 1] Figure caption." in normalized
     assert "[Table: Table 1] Table caption." in normalized
-    assert "Figure binaries" in (project / "output" / "reading-guide.md").read_text(encoding="utf-8")
+    rendered_guide = (project / "output" / "reading-guide.md").read_text(encoding="utf-8")
+    assert "当前版本不下载图像二进制文件" in rendered_guide
+    assert "Figure binaries" not in rendered_guide
     passages, _ = segment_paper(project)
     translate_paper(project, MockTranslationAdapter())
     records = read_jsonl(project / "state" / "translations.jsonl", TranslationRecord)

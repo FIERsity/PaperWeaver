@@ -241,5 +241,19 @@ def _write_markdown_guide(path: Path, guide: ReadingGuide) -> None:
         )
         if guide.inventory.warnings:
             lines.extend(["", f"## {'导入限制' if chinese else 'Import limits'}", ""])
-            lines.extend(f"- {warning}" for warning in guide.inventory.warnings)
+            lines.extend(f"- {_localize_warning(warning, chinese)}" for warning in guide.inventory.warnings)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _localize_warning(warning: str, chinese: bool) -> str:
+    if not chinese:
+        return warning
+    localized = {
+        "Figure binaries are not fetched in version 0.2; captions are retained as markers.": (
+            "当前版本不下载图像二进制文件；图注以结构标记形式保留。"
+        ),
+        "Equations are retained as protected text markers; mathematical layout is not rendered.": (
+            "公式以受保护的文本标记保留；暂不渲染其数学版式。"
+        ),
+    }
+    return localized.get(warning, warning)
