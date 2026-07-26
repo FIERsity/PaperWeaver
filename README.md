@@ -54,6 +54,8 @@ my-paper/
 
 `argument-map` is a deliberately conservative article-understanding artifact. It maps Introduction/Methods/Results/Discussion-like sections to exact Passage IDs and tells the reader where to inspect research question, method/identification, evidence, and conclusion boundaries. It does not restate findings as an Agent-generated summary.
 
+When the target language is Chinese (for example, `zh-CN`), the guide and argument-map headings, labels, and reading prompts are written in Chinese. Source section titles and source quotations remain unchanged until they receive their own reviewable TranslationRecords; a guide never silently substitutes a generated translation for the source.
+
 ## Translation workflow
 
 `segment` derives stable IDs from the imported source digest, section title, ordinal, and normalized text. A `TranslationUnit` stays inside one paper section and includes only immediate neighboring context plus approved glossary/entity evidence. `translate` is resumable; `translation-import` accepts strict Agent JSONL (`passage_id`, `translated_text`) and appends revisions rather than overwriting records. Use `--passage ID --reason terminology-fix` for an intentional selective retranslation. `export` writes bilingual Markdown only after complete Passage coverage validates.

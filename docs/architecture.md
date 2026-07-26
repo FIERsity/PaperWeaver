@@ -19,6 +19,8 @@ Each TranslationUnit contains source Passages from one paper section, immediate 
 
 `argument-map` is not a semantic summary engine. It creates four structural reading tasks only when a matching paper section exists: research question, method/identification, evidence, and conclusion boundary. Every task names the exact supporting Passage IDs. A future Agent explanation layer may elaborate these tasks only by attaching its evidence Passage IDs and distinguishing source statements from its explanatory inference.
 
+Reader-artifact chrome follows the project's target language: for `zh-*` projects, guide labels and reading prompts are Chinese. This is localization of the orientation layer, not a translation of the paper. Source headings and quotations stay as imported unless an append-only TranslationRecord supplies their translation.
+
 ## Repository boundary
 
 PaperWeaver and ContextWeaver are sibling repositories, not a monorepo and not mutually nested repositories. A local parent directory may contain both, but each working tree has exactly one Git history and one primary remote. They communicate only through documented file contracts or future versioned packages. Git submodules and copied implementation are intentionally out of scope: they would couple releases before a shared abstraction has demonstrated a stable need.
