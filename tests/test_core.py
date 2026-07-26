@@ -53,6 +53,7 @@ def test_completed_translation_exports_markdown_and_pdf(tmp_path: Path) -> None:
     assert markdown.name == "translated.md"
     assert "> Method text." not in markdown.read_text(encoding="utf-8")
     assert "[MOCK zh-CN] Method text." in markdown.read_text(encoding="utf-8")
+    assert "## Methods" not in markdown.read_text(encoding="utf-8")
     pdf = render_translation_pdf(markdown)
     assert pdf.exists() and pdf.read_bytes().startswith(b"%PDF")
 

@@ -225,7 +225,7 @@ def export_translated_markdown(root: Path) -> Path:
             lines.extend([item.text, ""])
         else:
             if item.section_title != current_section:
-                lines.extend([f"## {item.section_title}", ""])
+                lines.extend([f"## {_localized_section_title(item.section_title, paper['target_language'])}", ""])
                 current_section = item.section_title
             lines.extend([active[item.id].translated_text, ""])
     output = root / "output" / "translated.md"
@@ -268,6 +268,37 @@ def _paragraph_blocks(text: str):
 
 def _normalise(text: str) -> str:
     return " ".join(text.split())
+
+
+def _localized_section_title(title: str, target_language: str) -> str:
+    """Localize common academic section labels while retaining section numbering."""
+    if not target_language.casefold().startswith("zh"):
+        return title
+    replacements = {
+        "Abstract": "摘要", "Introduction": "引言", "Methods": "方法", "Results": "结果", "Measurement of environmental pollution": "环境污染的测度",
+        "Influencing factors of environmental pollution": "环境污染的影响因素", "DE and environmental pollution": "数字经济与环境污染",
+        "Spatial econometric model": "空间计量模型", "Research hypothesis": "研究假设",
+        "The direct effect of DE on environmental pollution": "数字经济对环境污染的直接效应",
+        "The transmission mechanism of DE affecting environmental pollution": "数字经济影响环境污染的传导机制",
+        "The threshold effect of DE on environmental pollution": "数字经济对环境污染的门槛效应",
+        "The spatial spillover effect of DE on environmental pollution": "数字经济对环境污染的空间溢出效应",
+        "Baseline regression model": "基准回归模型", "Variable description": "变量说明",
+        "Explained variable": "被解释变量", "Explanatory variable": "解释变量", "Control variables": "控制变量",
+        "Spatial weight matrix": "空间权重矩阵", "Benchmark regression results": "基准回归结果",
+        "Spatial correlation test": "空间相关性检验", "Spatial econometric model regression results": "空间计量模型回归结果",
+        "Municipalities are excluded": "剔除直辖市", "Core explanatory variables are replaced": "替换核心解释变量",
+        "Tail reduction treatment": "缩尾处理", "Sample is replaced": "替换样本", "Exogenous shock test": "外生冲击检验",
+        "Endogeneity problem": "内生性问题", "Mediation effect model": "中介效应模型",
+        "Industrial structure upgrading": "产业结构升级", "Green technology innovation": "绿色技术创新",
+        "Panel threshold model": "面板门槛模型", "Threshold effect test": "门槛效应检验",
+        "Panel threshold model regression results": "面板门槛模型回归结果",
+        "Geographical location heterogeneity": "地理位置异质性", "Resources endowment heterogeneity": "资源禀赋异质性",
+        "Administrative level heterogeneity": "行政层级异质性", "Discussion": "讨论",
+        "Conclusions and policy recommendations": "结论与政策建议",
+    }
+    for source, translated in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
+        title = title.replace(source, translated)
+    return title
 
 
 def _validate_evidence(
