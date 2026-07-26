@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "paperweaver"
-version = "0.1.0"
+version = "0.3.0"
 description = "A file-first workspace for translated academic papers and source-grounded reading guides."
 readme = "README.md"
 requires-python = ">=3.11"

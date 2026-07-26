@@ -4,6 +4,20 @@ import pytest
 
 from paperweaver.cli import run
 from paperweaver.core import build_reading_guide, import_paper, init_project, parse_sections
+from paperweaver.models import TranslationRecord
+from paperweaver.storage import read_jsonl
+from paperweaver.translation import (
+    MockTranslationAdapter,
+    build_context,
+    export_bilingual_markdown,
+    import_entities,
+    import_glossary,
+    import_translation_draft,
+    segment_paper,
+    translate_paper,
+    validate_translations,
+)
+from paperweaver.understanding import build_argument_map
 
 
 def test_markdown_structure_and_source_grounded_guide(tmp_path: Path) -> None:
@@ -74,3 +88,83 @@ def test_jats_import_retains_structure_and_inventory(tmp_path: Path) -> None:
     assert "[Figure: Fig 1] Figure caption." in normalized
     assert "[Table: Table 1] Table caption." in normalized
     assert "Figure binaries" in (project / "output" / "reading-guide.md").read_text(encoding="utf-8")
+    passages, _ = segment_paper(project)
+    translate_paper(project, MockTranslationAdapter())
+    records = read_jsonl(project / "state" / "translations.jsonl", TranslationRecord)
+    structural = {item.id for item in passages if item.kind == "structural"}
+    assert not structural.intersection({item.passage_id for item in records})
+
+
+def test_resumable_translation_units_context_revisions_and_bilingual_export(tmp_path: Path) -> None:
+    source = tmp_path / "paper.md"
+    source.write_text(
+        "# Paper\n\n## Introduction\n\nQuestion text.\n\n## Methods\n\nMethod text.\n\n## Results\n\nEvidence text.\n\n## Discussion\n\nBoundary text.\n",
+        encoding="utf-8",
+    )
+    project = tmp_path / "project"
+    init_project(project, "Paper", "en", "zh-CN")
+    import_paper(project, source)
+    passages, units = segment_paper(project, unit_size=1)
+    assert len(passages) == 4
+    context = build_context(project, units[1])
+    assert context.previous_text == "Question text."
+    assert context.next_text == "Evidence text."
+    assert translate_paper(project, MockTranslationAdapter()) == (4, 0)
+    assert translate_paper(project, MockTranslationAdapter()) == (0, 4)
+    assert validate_translations(project) == []
+    assert "> Question text." in export_bilingual_markdown(project).read_text(encoding="utf-8")
+
+    draft = tmp_path / "revision.jsonl"
+    draft.write_text(
+        '{"passage_id": "' + passages[0].id + '", "translated_text": "修订译文"}\n',
+        encoding="utf-8",
+    )
+    assert import_translation_draft(project, draft, "agent", "test", "terminology-fix") == 1
+    records = read_jsonl(project / "state" / "translations.jsonl", TranslationRecord)
+    chain = [item for item in records if item.passage_id == passages[0].id]
+    assert [item.revision for item in chain] == [1, 2]
+    assert chain[1].supersedes == chain[0].id
+
+
+def test_argument_map_uses_structural_evidence_not_invented_summary(tmp_path: Path) -> None:
+    source = tmp_path / "paper.md"
+    source.write_text(
+        "# Paper\n\n## Introduction\n\nQuestion.\n\n## Methods\n\nMethod.\n\n## Results\n\nEvidence.\n\n## Limitations\n\nBoundary.\n",
+        encoding="utf-8",
+    )
+    project = tmp_path / "project"
+    init_project(project, "Paper", "en", "zh-CN")
+    import_paper(project, source)
+    segment_paper(project)
+    points = build_argument_map(project)
+    assert {item.category for item in points} == {"question", "method", "evidence", "boundary"}
+    assert all(item.evidence_passage_ids for item in points)
+    assert "Question." not in (project / "output" / "argument-map.md").read_text(encoding="utf-8")
+
+
+def test_approved_glossary_and_entities_enter_context_with_source_evidence(tmp_path: Path) -> None:
+    source = tmp_path / "paper.md"
+    source.write_text("# Paper\n\n## Methods\n\nThe OECD used a panel.\n", encoding="utf-8")
+    project = tmp_path / "project"
+    init_project(project, "Paper", "en", "zh-CN")
+    import_paper(project, source)
+    passages, units = segment_paper(project)
+    glossary = tmp_path / "glossary.jsonl"
+    glossary.write_text(
+        '{"term":"OECD","preferred_translation":"经济合作与发展组织","evidence_passage_ids":["'
+        + passages[0].id + '"],"confidence":0.98,"status":"approved","note":"Official name."}\n',
+        encoding="utf-8",
+    )
+    entities = tmp_path / "entities.jsonl"
+    entities.write_text(
+        '{"name":"OECD","kind":"organization","evidence_passage_ids":["'
+        + passages[0].id + '"],"confidence":0.98,"status":"approved"}\n',
+        encoding="utf-8",
+    )
+    assert import_glossary(project, glossary) == 1
+    assert import_entities(project, entities) == 1
+    context = build_context(project, units[0])
+    assert context.glossary[0].preferred_translation == "经济合作与发展组织"
+    assert context.entities[0].name == "OECD"
+    with pytest.raises(ValueError, match="already exists"):
+        import_glossary(project, glossary)

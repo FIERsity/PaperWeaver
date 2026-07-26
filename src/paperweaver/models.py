@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 
 class Record:
@@ -56,3 +56,77 @@ class ReadingGuide(Record):
     sections: list[PaperSection] = field(default_factory=list)
     questions: list[str] = field(default_factory=list)
     inventory: PaperInventory | None = None
+
+
+@dataclass(frozen=True)
+class Passage(Record):
+    """The smallest translatable paper unit; ID remains stable for unchanged source text."""
+
+    id: str
+    section_title: str
+    ordinal: int
+    text: str
+    source_locator: str
+    kind: Literal["paragraph", "structural"] = "paragraph"
+
+
+@dataclass(frozen=True)
+class TranslationUnit(Record):
+    id: str
+    section_title: str
+    passage_ids: list[str]
+    ordinal: int
+
+
+@dataclass(frozen=True)
+class GlossaryEntry(Record):
+    term: str
+    preferred_translation: str
+    evidence_passage_ids: list[str]
+    confidence: float
+    status: Literal["proposed", "approved", "rejected"] = "proposed"
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class Entity(Record):
+    name: str
+    kind: str
+    evidence_passage_ids: list[str]
+    confidence: float
+    status: Literal["proposed", "approved", "rejected"] = "proposed"
+
+
+@dataclass(frozen=True)
+class TranslationContext(Record):
+    unit_id: str
+    passages: list[Passage]
+    previous_text: str | None
+    next_text: str | None
+    glossary: list[GlossaryEntry]
+    entities: list[Entity]
+    source_language: str
+    target_language: str
+
+
+@dataclass(frozen=True)
+class TranslationRecord(Record):
+    id: str
+    unit_id: str
+    passage_id: str
+    translated_text: str
+    adapter: str
+    model: str
+    created_at: str
+    source_sha256: str
+    revision: int = 1
+    supersedes: str | None = None
+    reason: str = "initial"
+
+
+@dataclass(frozen=True)
+class GuidePoint(Record):
+    category: Literal["question", "method", "evidence", "boundary"]
+    statement: str
+    evidence_passage_ids: list[str]
+    confidence: float
