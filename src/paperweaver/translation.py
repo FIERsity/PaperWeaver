@@ -240,12 +240,25 @@ def _source_digest(root: Path) -> str:
 
 
 def _paragraph_blocks(text: str):
-    line = 1
-    for block in text.split("\n\n"):
-        value = block.strip()
-        if value:
-            yield line, value
-        line += block.count("\n") + 2
+    start = 1
+    buffered: list[str] = []
+    for line_number, line in enumerate(text.splitlines(), 1):
+        if line.startswith("#"):
+            if buffered:
+                yield start, "\n".join(buffered).strip()
+                buffered = []
+            yield line_number, line.strip()
+            start = line_number + 1
+        elif line.strip():
+            if not buffered:
+                start = line_number
+            buffered.append(line)
+        elif buffered:
+            yield start, "\n".join(buffered).strip()
+            buffered = []
+            start = line_number + 1
+    if buffered:
+        yield start, "\n".join(buffered).strip()
 
 
 def _normalise(text: str) -> str:

@@ -61,7 +61,9 @@ def build_reading_guide(root: Path) -> ReadingGuide:
     abstract = next((section_text(text, section) for section in sections if section.is_abstract), None)
     inventory_path = root / "source" / "inventory.json"
     inventory = PaperInventory(**json.loads(inventory_path.read_text(encoding="utf-8"))) if inventory_path.exists() else None
-    guide = ReadingGuide(title, abstract, sections, _questions(sections, inventory), inventory)
+    guide = ReadingGuide(
+        title, abstract, sections, _questions(sections, inventory, _require_project(root).target_language), inventory
+    )
     _write_json(root / "output" / "reading-guide.json", guide.to_dict())
     _write_markdown_guide(root / "output" / "reading-guide.md", guide)
     return guide
@@ -83,19 +85,26 @@ def section_text(text: str, section: PaperSection) -> str:
     return "\n".join(text.splitlines()[section.start_line : section.end_line]).strip()
 
 
-def _questions(sections: list[PaperSection], inventory: PaperInventory | None = None) -> list[str]:
+def _questions(
+    sections: list[PaperSection], inventory: PaperInventory | None = None, target_language: str = "en"
+) -> list[str]:
     names = {section.title.casefold() for section in sections}
-    prompts = ["What question does the paper set out to answer?", "Which claims are directly supported by the reported evidence?"]
+    chinese = target_language.casefold().startswith("zh")
+    prompts = (
+        ["论文试图回答什么研究问题？", "哪些主张得到文中报告证据的直接支持？"]
+        if chinese
+        else ["What question does the paper set out to answer?", "Which claims are directly supported by the reported evidence?"]
+    )
     if any(name in names for name in ("methods", "methodology", "materials and methods")):
-        prompts.append("What does the method identify, and what does it leave unidentified?")
+        prompts.append("该方法能够识别什么，又有哪些内容无法识别？" if chinese else "What does the method identify, and what does it leave unidentified?")
     if any(name in names for name in ("results", "findings")):
-        prompts.append("Which result is central, and how large or uncertain is it?")
+        prompts.append("哪项结果居于核心，其效应大小或不确定性如何？" if chinese else "Which result is central, and how large or uncertain is it?")
     if any(name in names for name in ("discussion", "conclusion", "limitations")):
-        prompts.append("Where do the authors distinguish evidence from interpretation or limitation?")
+        prompts.append("作者在哪里区分证据、解释与局限？" if chinese else "Where do the authors distinguish evidence from interpretation or limitation?")
     if inventory and inventory.figures:
-        prompts.append("Which claim does each figure support, and does its caption state a limitation?")
+        prompts.append("每幅图支持哪项主张，其图注是否说明了限制？" if chinese else "Which claim does each figure support, and does its caption state a limitation?")
     if inventory and inventory.tables:
-        prompts.append("Which comparison in the tables is necessary for the paper's central claim?")
+        prompts.append("表格中的哪项比较是核心主张所必需的？" if chinese else "Which comparison in the tables is necessary for the paper's central claim?")
     return prompts
 
 
@@ -213,23 +222,24 @@ def _write_json(path: Path, value: dict[str, object]) -> None:
 
 
 def _write_markdown_guide(path: Path, guide: ReadingGuide) -> None:
-    lines = [f"# Reading guide: {guide.title}", "", "## Structure", ""]
-    lines.extend(f"- {section.title} ({section.word_count} words)" for section in guide.sections)
+    chinese = any("论文" in question for question in guide.questions)
+    lines = [f"# {'阅读导读' if chinese else 'Reading guide'}: {guide.title}", "", f"## {'结构' if chinese else 'Structure'}", ""]
+    lines.extend(f"- {section.title} ({section.word_count} {'词' if chinese else 'words'})" for section in guide.sections)
     if guide.abstract:
-        lines.extend(["", "## Abstract", "", guide.abstract])
-    lines.extend(["", "## Questions", ""])
+        lines.extend(["", f"## {'摘要' if chinese else 'Abstract'}", "", guide.abstract])
+    lines.extend(["", f"## {'阅读问题' if chinese else 'Questions'}", ""])
     lines.extend(f"- {question}" for question in guide.questions)
     if guide.inventory:
-        lines.extend(["", "## Structure inventory", ""])
+        lines.extend(["", f"## {'结构清单' if chinese else 'Structure inventory'}", ""])
         lines.extend(
             [
-                f"- Figures: {guide.inventory.figures}", f"- Tables: {guide.inventory.tables}",
-                f"- Displayed equations: {guide.inventory.equations}",
-                f"- Bibliographic citations: {guide.inventory.citations}",
-                f"- References: {guide.inventory.references}",
+                f"- {'图' if chinese else 'Figures'}: {guide.inventory.figures}", f"- {'表' if chinese else 'Tables'}: {guide.inventory.tables}",
+                f"- {'展示公式' if chinese else 'Displayed equations'}: {guide.inventory.equations}",
+                f"- {'文献引注' if chinese else 'Bibliographic citations'}: {guide.inventory.citations}",
+                f"- {'参考文献' if chinese else 'References'}: {guide.inventory.references}",
             ]
         )
         if guide.inventory.warnings:
-            lines.extend(["", "## Import limits", ""])
+            lines.extend(["", f"## {'导入限制' if chinese else 'Import limits'}", ""])
             lines.extend(f"- {warning}" for warning in guide.inventory.warnings)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

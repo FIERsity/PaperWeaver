@@ -33,7 +33,7 @@ def test_markdown_structure_and_source_grounded_guide(tmp_path: Path) -> None:
     assert imported.title == "Study"
     assert guide.abstract == "Abstract text."
     assert [item.title for item in guide.sections] == ["Study", "Abstract", "Methods", "Results"]
-    assert any("method" in question.casefold() for question in guide.questions)
+    assert any("方法" in question for question in guide.questions)
     assert (project / "output" / "reading-guide.md").exists()
 
 
@@ -162,6 +162,24 @@ def test_argument_map_uses_structural_evidence_not_invented_summary(tmp_path: Pa
     assert {item.category for item in points} == {"question", "method", "evidence", "boundary"}
     assert all(item.evidence_passage_ids for item in points)
     assert "Question." not in (project / "output" / "argument-map.md").read_text(encoding="utf-8")
+
+
+def test_argument_map_prefers_numbered_method_result_and_discussion_sections(tmp_path: Path) -> None:
+    source = tmp_path / "paper.md"
+    source.write_text(
+        "# Paper\n\n## Abstract\n\nAbstract.\n\n## 1 Introduction\n\nQuestion.\n\n## 4.1 Baseline model\n\nMethod.\n\n## 5.1 Results\n\nEvidence.\n\n## 7 Discussion\n\nBoundary.\n",
+        encoding="utf-8",
+    )
+    project = tmp_path / "project"
+    init_project(project, "Paper", "en", "zh-CN")
+    import_paper(project, source)
+    passages, _ = segment_paper(project)
+    points = {item.category: item for item in build_argument_map(project)}
+    by_id = {item.id: item for item in passages}
+    assert by_id[points["question"].evidence_passage_ids[0]].section_title == "1 Introduction"
+    assert by_id[points["method"].evidence_passage_ids[0]].section_title == "4.1 Baseline model"
+    assert by_id[points["evidence"].evidence_passage_ids[0]].section_title == "5.1 Results"
+    assert by_id[points["boundary"].evidence_passage_ids[0]].section_title == "7 Discussion"
 
 
 def test_approved_glossary_and_entities_enter_context_with_source_evidence(tmp_path: Path) -> None:
