@@ -6,18 +6,17 @@ import argparse
 import logging
 from pathlib import Path
 
-from .core import build_reading_guide, import_paper, init_project
+from .core import import_paper, init_project
+from .publication import render_translation_pdf
+from .summary import export_chinese_summary, import_chinese_summary
 from .translation import (
     MockTranslationAdapter,
-    export_bilingual_markdown,
-    import_entities,
-    import_glossary,
+    export_translated_markdown,
     import_translation_draft,
     segment_paper,
     translate_paper,
     validate_translations,
 )
-from .understanding import build_argument_map
 
 
 def parser() -> argparse.ArgumentParser:
@@ -31,8 +30,6 @@ def parser() -> argparse.ArgumentParser:
     imported = commands.add_parser("import", help="Import a Markdown, TXT, or JATS XML paper")
     imported.add_argument("project", type=Path)
     imported.add_argument("source", type=Path)
-    guide = commands.add_parser("guide", help="Write source-grounded reading guide artifacts")
-    guide.add_argument("project", type=Path)
     segment = commands.add_parser("segment", help="Create stable paper Passages and TranslationUnits")
     segment.add_argument("project", type=Path)
     segment.add_argument("--unit-size", type=int, default=2)
@@ -47,18 +44,17 @@ def parser() -> argparse.ArgumentParser:
     draft.add_argument("--adapter", default="paper-agent")
     draft.add_argument("--model", required=True)
     draft.add_argument("--reason", default="agent-import")
-    glossary = commands.add_parser("glossary-import", help="Append evidence-backed glossary rows from JSONL")
-    glossary.add_argument("project", type=Path)
-    glossary.add_argument("draft", type=Path)
-    entities = commands.add_parser("entity-import", help="Append evidence-backed entity rows from JSONL")
-    entities.add_argument("project", type=Path)
-    entities.add_argument("draft", type=Path)
     validate = commands.add_parser("validate", help="Validate one-to-one paper Passage translations")
     validate.add_argument("project", type=Path)
-    exported = commands.add_parser("export", help="Export bilingual Markdown after validation")
+    exported = commands.add_parser("export-translation", help="Export complete translated Markdown and A4 PDF")
     exported.add_argument("project", type=Path)
-    argument_map = commands.add_parser("argument-map", help="Write source-grounded research reading map")
-    argument_map.add_argument("project", type=Path)
+    summary = commands.add_parser("summary-import", help="Append a sourced Chinese whole-paper summary JSON")
+    summary.add_argument("project", type=Path)
+    summary.add_argument("draft", type=Path)
+    summary.add_argument("--adapter", default="paper-agent")
+    summary.add_argument("--model", required=True)
+    summary_export = commands.add_parser("export-summary", help="Export the latest Chinese whole-paper summary")
+    summary_export.add_argument("project", type=Path)
     return root
 
 
@@ -68,8 +64,6 @@ def run(arguments: list[str] | None = None) -> int:
         init_project(args.project, args.title, args.source_language, args.target_language)
     elif args.command == "import":
         import_paper(args.project, args.source)
-    elif args.command == "guide":
-        build_reading_guide(args.project)
     elif args.command == "segment":
         segment_paper(args.project, args.unit_size)
     elif args.command == "translate":
@@ -79,20 +73,18 @@ def run(arguments: list[str] | None = None) -> int:
         )
     elif args.command == "translation-import":
         import_translation_draft(args.project, args.draft, args.adapter, args.model, args.reason)
-    elif args.command == "glossary-import":
-        import_glossary(args.project, args.draft)
-    elif args.command == "entity-import":
-        import_entities(args.project, args.draft)
     elif args.command == "validate":
         errors = validate_translations(args.project)
         if errors:
             for error in errors:
                 print(error)
             return 1
-    elif args.command == "export":
-        export_bilingual_markdown(args.project)
+    elif args.command == "export-translation":
+        render_translation_pdf(export_translated_markdown(args.project))
+    elif args.command == "summary-import":
+        import_chinese_summary(args.project, args.draft, args.adapter, args.model)
     else:
-        build_argument_map(args.project)
+        export_chinese_summary(args.project)
     return 0
 
 

@@ -211,19 +211,24 @@ def validate_translations(root: Path) -> list[str]:
     return errors
 
 
-def export_bilingual_markdown(root: Path) -> Path:
+def export_translated_markdown(root: Path) -> Path:
     passages = read_jsonl(root / STATE / "passages.jsonl", Passage)
     errors = validate_translations(root)
     if errors:
         raise RuntimeError("Cannot export incomplete translations: " + "; ".join(errors[:3]))
     active = active_translations(read_jsonl(root / STATE / "translations.jsonl", TranslationRecord))
-    lines = ["# Bilingual paper draft", ""]
+    paper = json.loads((root / "paper.json").read_text(encoding="utf-8"))
+    lines = [f"# {paper['title']}", ""]
+    current_section: str | None = None
     for item in passages:
         if item.kind == "structural":
             lines.extend([item.text, ""])
         else:
-            lines.extend([f"> {item.text}", "", active[item.id].translated_text, ""])
-    output = root / "output" / "bilingual.md"
+            if item.section_title != current_section:
+                lines.extend([f"## {item.section_title}", ""])
+                current_section = item.section_title
+            lines.extend([active[item.id].translated_text, ""])
+    output = root / "output" / "translated.md"
     output.write_text("\n".join(lines), encoding="utf-8")
     return output
 

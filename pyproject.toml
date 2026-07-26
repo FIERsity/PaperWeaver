@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "paperweaver"
-version = "0.3.0"
-description = "A file-first workspace for translated academic papers and source-grounded reading guides."
+version = "0.4.0"
+description = "A file-first workspace for complete Chinese paper translations and evidence-backed summaries."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
@@ -17,7 +17,7 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
 ]
-dependencies = []
+dependencies = ["reportlab>=4.2"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]

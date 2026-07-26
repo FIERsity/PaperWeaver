@@ -1,12 +1,17 @@
 # PaperWeaver
 
-PaperWeaver is an early-stage, file-first workspace for reading, translating, and publishing academic papers for Chinese readers.
+PaperWeaver is a small, file-first workspace for turning an academic paper into two Chinese deliverables:
 
-It treats a paper as more than a sequence of paragraphs. The project will preserve its argument structure, figures, tables, citations, terminology, and reading path, then produce both a faithful translation and an intelligible article guide. The intended output is a readable Chinese paper edition—not a page-for-page imitation of an English journal PDF.
+1. a complete translated Markdown document and a print-oriented A4 PDF;
+2. a Chinese whole-paper summary covering the paper's content, methods, conclusions, and stated limitations.
+
+It deliberately does not try to be a general reading-guide, knowledge-graph, or terminology-management application. Stable translation units, append-only revisions, and source evidence remain because they make the two deliverables reviewable and resumable.
 
 ## Status
 
-Version 0.3 imports Markdown, TXT, and JATS XML papers; recognizes common numbered section headings in extracted academic TXT; retains JATS XML alongside normalized review Markdown; inventories figures, tables, displayed equations, citations, and references; creates stable paper Passages and TranslationUnits; preserves append-only translation revisions; and writes source-grounded reading artifacts. The included mock translator makes the complete workflow testable without an API key. Online adapters, DOCX/PDF import, figure binaries, terminology research, and publication typesetting are planned next.
+Version 0.4 imports Markdown, TXT, and JATS XML, preserves the original source digest, derives stable paragraph Passages, accepts append-only Agent translations, validates complete coverage, and exports `translated.md` plus `pdf/translated.pdf`. It also accepts an evidence-cited Chinese summary draft and exports `中文全文摘要.md`. PDF output uses Songti for Chinese and Times Roman for Latin runs.
+
+PDF/DOCX source import, online model adapters, embedded figure binaries, automatic summary generation, and journal-faithful layout are intentionally out of scope for now.
 
 ## Quick start
 
@@ -17,66 +22,49 @@ python -m venv .venv
 source .venv/bin/activate
 python -m pip install -e '.[dev]'
 
-paperweaver init my-paper --title "A study"
-paperweaver import my-paper examples/sample-paper.md  # or a JATS .xml article
+paperweaver init my-paper --title "论文中文题名"
+paperweaver import my-paper paper.xml
 paperweaver segment my-paper --unit-size 2
-paperweaver argument-map my-paper
-paperweaver translate my-paper
+
+# Append a strict Agent-produced JSONL translation draft, then validate and publish.
+paperweaver translation-import my-paper translations.jsonl --model my-model
 paperweaver validate my-paper
-paperweaver export my-paper
-paperweaver guide my-paper
+paperweaver export-translation my-paper
+
+# Import and publish the Chinese whole-paper summary.
+paperweaver summary-import my-paper summary.json --model my-model
+paperweaver export-summary my-paper
 ```
 
-This creates:
+`translations.jsonl` must contain one JSON object per source Passage:
+
+```json
+{"passage_id":"psg_example","translated_text":"对应的中文译文。"}
+```
+
+`summary.json` must be one JSON object with exactly these fields:
+
+```json
+{
+  "overview": "全文中文概述。",
+  "methods": "数据、设计与方法。",
+  "conclusions": "论文报告的结论。",
+  "limitations": "作者陈述的局限与适用边界。",
+  "evidence_passage_ids": ["psg_example"]
+}
+```
+
+The output directory contains only the two user-facing deliverables:
 
 ```text
-my-paper/
-├── paper.json
-├── source/article.md
-├── state/
-│   ├── passages.jsonl
-│   ├── units.jsonl
-│   └── translations.jsonl
-└── output/
-    ├── argument-map.md
-    ├── bilingual.md
-    ├── reading-guide.json
-    └── reading-guide.md
+output/
+├── translated.md
+├── pdf/translated.pdf
+└── 中文全文摘要.md
 ```
 
-## What a guide contains
+`export-translation` refuses incomplete translation coverage. `summary-import` requires every summary to cite imported Passage IDs. Both choices favor an explicit failure over a plausible-looking but incomplete publication.
 
-- Paper title and source metadata.
-- Abstract (when marked by an `## Abstract` heading).
-- Section map and word counts.
-- A structure inventory for JATS figures, tables, equations, citations, and references.
-- Reading questions that distinguish the research question, method, evidence, limits, and contribution.
+## Development
 
-`argument-map` is a deliberately conservative article-understanding artifact. It maps Introduction/Methods/Results/Discussion-like sections to exact Passage IDs and tells the reader where to inspect research question, method/identification, evidence, and conclusion boundaries. It does not restate findings as an Agent-generated summary.
-
-When the target language is Chinese (for example, `zh-CN`), the guide and argument-map headings, labels, and reading prompts are written in Chinese. Source section titles and source quotations remain unchanged until they receive their own reviewable TranslationRecords; a guide never silently substitutes a generated translation for the source.
-
-## Translation workflow
-
-`segment` derives stable IDs from the imported source digest, section title, ordinal, and normalized text. A `TranslationUnit` stays inside one paper section and includes only immediate neighboring context plus approved glossary/entity evidence. `translate` is resumable; `translation-import` accepts strict Agent JSONL (`passage_id`, `translated_text`) and appends revisions rather than overwriting records. Use `--passage ID --reason terminology-fix` for an intentional selective retranslation. `export` writes bilingual Markdown only after complete Passage coverage validates.
-
-`glossary-import` and `entity-import` accept separate strict JSONL rows. Every row must cite real `evidence_passage_ids`; duplicate terms/entities are rejected rather than overwritten. Only rows whose status is `approved` enter a `TranslationContext`.
-
-The guide is intentionally an orientation aid, not an invented summary or a substitute for reading the source.
-
-## Roadmap
-
-1. Markdown foundation and reviewable reading guide.
-2. DOCX and PDF-aware import with figure/table/citation inventory.
-3. Terminology/entity extraction and sourced terminology adjudication.
-4. Provider-neutral online adapters, translation critique, bilingual comparison, and selective revision.
-5. Chinese academic PDF/DOCX/EPUB rendering with reflowed figures and tables.
-6. Agent-generated source-grounded article explanations, method explainers, and discussion questions.
-
-## Relationship to ContextWeaver
-
-PaperWeaver is a separate project from [ContextWeaver](https://github.com/FIERsity/ContextWeaver). Each has its own Git history, issues, releases, CI, dependencies, and project directory. PaperWeaver may later reuse ideas such as append-only revision history, source evidence, and model-independent adapters, but it does not vendor or duplicate ContextWeaver code. A shared implementation, if justified, must be extracted into a separately versioned and licensed package rather than added as a Git submodule or copied between repositories.
-
-## Contributing
-
-See [AGENTS.md](AGENTS.md) and [docs/architecture.md](docs/architecture.md). This project is pre-alpha; small, tested changes are preferred.
+See [AGENTS.md](AGENTS.md) and [docs/architecture.md](docs/architecture.md). This project is pre-alpha; keep changes small, tested, and compatible with existing translation records.

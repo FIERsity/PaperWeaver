@@ -8,7 +8,7 @@ import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from .models import Paper, PaperInventory, PaperSection, PaperSource, ReadingGuide
+from .models import Paper, PaperInventory, PaperSection, PaperSource
 
 
 def init_project(root: Path, title: str, source_language: str, target_language: str) -> Paper:
@@ -23,7 +23,7 @@ def init_project(root: Path, title: str, source_language: str, target_language: 
 
 def import_paper(root: Path, source: Path) -> PaperSource:
     if source.suffix.lower() not in {".md", ".markdown", ".txt", ".xml"}:
-        raise ValueError("Version 0.2 supports Markdown, TXT, and JATS XML; DOCX/PDF are planned")
+        raise ValueError("Version 0.4 supports Markdown, TXT, and JATS XML; DOCX/PDF are not supported")
     _require_project(root)
     data = source.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
@@ -51,24 +51,6 @@ def import_paper(root: Path, source: Path) -> PaperSource:
     return record
 
 
-def build_reading_guide(root: Path) -> ReadingGuide:
-    source = root / "source" / "article.md"
-    if not source.exists():
-        raise FileNotFoundError("No imported paper. Run paperweaver import first.")
-    text = source.read_text(encoding="utf-8")
-    sections = parse_sections(text)
-    title = _first_heading(text) or _require_project(root).title
-    abstract = next((section_text(text, section) for section in sections if section.is_abstract), None)
-    inventory_path = root / "source" / "inventory.json"
-    inventory = PaperInventory(**json.loads(inventory_path.read_text(encoding="utf-8"))) if inventory_path.exists() else None
-    guide = ReadingGuide(
-        title, abstract, sections, _questions(sections, inventory, _require_project(root).target_language), inventory
-    )
-    _write_json(root / "output" / "reading-guide.json", guide.to_dict())
-    _write_markdown_guide(root / "output" / "reading-guide.md", guide)
-    return guide
-
-
 def parse_sections(text: str) -> list[PaperSection]:
     lines = text.splitlines()
     headings = [(index, match) for index, line in enumerate(lines) if (match := re.match(r"^(#{1,6})\s+(.+?)\s*$", line))]
@@ -79,33 +61,6 @@ def parse_sections(text: str) -> list[PaperSection]:
         body = " ".join(lines[start + 1 : end]).strip()
         sections.append(PaperSection(title, len(match.group(1)), start + 1, end, len(body.split()), title.casefold() == "abstract"))
     return sections
-
-
-def section_text(text: str, section: PaperSection) -> str:
-    return "\n".join(text.splitlines()[section.start_line : section.end_line]).strip()
-
-
-def _questions(
-    sections: list[PaperSection], inventory: PaperInventory | None = None, target_language: str = "en"
-) -> list[str]:
-    names = {section.title.casefold() for section in sections}
-    chinese = target_language.casefold().startswith("zh")
-    prompts = (
-        ["论文试图回答什么研究问题？", "哪些主张得到文中报告证据的直接支持？"]
-        if chinese
-        else ["What question does the paper set out to answer?", "Which claims are directly supported by the reported evidence?"]
-    )
-    if any(name in names for name in ("methods", "methodology", "materials and methods")):
-        prompts.append("该方法能够识别什么，又有哪些内容无法识别？" if chinese else "What does the method identify, and what does it leave unidentified?")
-    if any(name in names for name in ("results", "findings")):
-        prompts.append("哪项结果居于核心，其效应大小或不确定性如何？" if chinese else "Which result is central, and how large or uncertain is it?")
-    if any(name in names for name in ("discussion", "conclusion", "limitations")):
-        prompts.append("作者在哪里区分证据、解释与局限？" if chinese else "Where do the authors distinguish evidence from interpretation or limitation?")
-    if inventory and inventory.figures:
-        prompts.append("每幅图支持哪项主张，其图注是否说明了限制？" if chinese else "Which claim does each figure support, and does its caption state a limitation?")
-    if inventory and inventory.tables:
-        prompts.append("表格中的哪项比较是核心主张所必需的？" if chinese else "Which comparison in the tables is necessary for the paper's central claim?")
-    return prompts
 
 
 def _import_jats(data: bytes) -> tuple[str, str, PaperInventory]:
@@ -219,41 +174,3 @@ def _require_project(root: Path) -> Paper:
 
 def _write_json(path: Path, value: dict[str, object]) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-
-def _write_markdown_guide(path: Path, guide: ReadingGuide) -> None:
-    chinese = any("论文" in question for question in guide.questions)
-    lines = [f"# {'阅读导读' if chinese else 'Reading guide'}: {guide.title}", "", f"## {'结构' if chinese else 'Structure'}", ""]
-    lines.extend(f"- {section.title} ({section.word_count} {'词' if chinese else 'words'})" for section in guide.sections)
-    if guide.abstract:
-        lines.extend(["", f"## {'摘要' if chinese else 'Abstract'}", "", guide.abstract])
-    lines.extend(["", f"## {'阅读问题' if chinese else 'Questions'}", ""])
-    lines.extend(f"- {question}" for question in guide.questions)
-    if guide.inventory:
-        lines.extend(["", f"## {'结构清单' if chinese else 'Structure inventory'}", ""])
-        lines.extend(
-            [
-                f"- {'图' if chinese else 'Figures'}: {guide.inventory.figures}", f"- {'表' if chinese else 'Tables'}: {guide.inventory.tables}",
-                f"- {'展示公式' if chinese else 'Displayed equations'}: {guide.inventory.equations}",
-                f"- {'文献引注' if chinese else 'Bibliographic citations'}: {guide.inventory.citations}",
-                f"- {'参考文献' if chinese else 'References'}: {guide.inventory.references}",
-            ]
-        )
-        if guide.inventory.warnings:
-            lines.extend(["", f"## {'导入限制' if chinese else 'Import limits'}", ""])
-            lines.extend(f"- {_localize_warning(warning, chinese)}" for warning in guide.inventory.warnings)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def _localize_warning(warning: str, chinese: bool) -> str:
-    if not chinese:
-        return warning
-    localized = {
-        "Figure binaries are not fetched in version 0.2; captions are retained as markers.": (
-            "当前版本不下载图像二进制文件；图注以结构标记形式保留。"
-        ),
-        "Equations are retained as protected text markers; mathematical layout is not rendered.": (
-            "公式以受保护的文本标记保留；暂不渲染其数学版式。"
-        ),
-    }
-    return localized.get(warning, warning)

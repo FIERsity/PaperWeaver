@@ -1,26 +1,11 @@
 # Architecture
 
-PaperWeaver has three deliberately separate layers:
+PaperWeaver has one narrow purpose: produce a complete Chinese translation edition and a source-grounded Chinese whole-paper summary.
 
-1. **Source retention** copies the imported paper and records its SHA-256 digest.
-2. **Paper structure** identifies title, abstract, sections, and source line ranges without interpreting claims.
-3. **Translation state** derives stable Passages and section-bounded TranslationUnits, then stores append-only TranslationRecords.
-4. **Reader artifacts** derive source-grounded guides, argument maps, and later rendered editions.
+The source is copied into `source/` and identified by SHA-256. `segment` turns normalized Markdown into stable paragraph Passages and section-bounded TranslationUnits. A Passage ID includes the source digest, section, ordinal, and normalized text; an ID change is therefore a migration concern, not a cosmetic refactor.
 
-The canonical state is transparent JSONL and Markdown under a project directory. The source is authoritative. A Passage ID is a SHA-256-derived value over source digest, section title, source ordinal, and normalized text. Translation revisions link to their predecessor and never overwrite history. Guides are derived artifacts and must identify uncertainty rather than invent research conclusions.
+Translations are append-only `TranslationRecord`s in `state/translations.jsonl`. A revised translation links to the record it supersedes. Export reads the latest record for every non-structural Passage and refuses to write an edition if any are missing. The edition renderer writes `output/translated.md`, then a reflowed A4 PDF at `output/pdf/translated.pdf`. Chinese text uses Songti and Latin runs use Times Roman; it is a readable edition rather than a page-for-page recreation of a journal PDF.
 
-The Markdown parser is intentionally conservative. It recognizes ATX headings and an `Abstract` section. Extracted TXT sources may contain common numbered paper headings such as `4 Data and methods`; these are normalized to reviewable Markdown headings, while title metadata in a `TITLE:` line becomes the document title. The JATS importer retains the original XML, writes normalized Markdown for inspection, and produces a transparent inventory of figures, tables, displayed equations, bibliographic citations, references, and import limits. It preserves caption text as explicit markers but does not fetch figure binaries or claim mathematical layout fidelity. Future DOCX/PDF importers must satisfy the same structure-before-semantics rule.
+Chinese whole-paper summaries are separate append-only `ChineseSummaryRecord`s in `state/chinese-summaries.jsonl`. Every record supplies four required parts: overview, methods, conclusions, and limitations. It also cites imported Passage IDs. `export-summary` renders only the newest revision to `output/中文全文摘要.md`; the source and prior summary records remain intact for review.
 
-## Translation and evidence
-
-Each TranslationUnit contains source Passages from one paper section, immediate adjacent text, and only approved terminology/entity evidence. Translation adapters must return one non-empty output per requested Passage. `translations.jsonl` is append-only; a selective retranslation appends a new record with `supersedes`, so a reviewer can reconstruct every decision. The mock adapter is for workflow validation only.
-
-`glossary.jsonl` and `entities.jsonl` are evidence-bound collections. Imported rows must reference extant Passage IDs and cannot silently replace an existing term/entity name. Proposed rows remain outside translation context; an approved row is an explicit, inspectable decision. Future terminology extraction and authority research must append candidates or revisions rather than weaken this rule.
-
-`argument-map` is not a semantic summary engine. It creates four structural reading tasks only when a matching paper section exists: research question, method/identification, evidence, and conclusion boundary. Every task names the exact supporting Passage IDs. A future Agent explanation layer may elaborate these tasks only by attaching its evidence Passage IDs and distinguishing source statements from its explanatory inference.
-
-Reader-artifact chrome follows the project's target language: for `zh-*` projects, guide labels and reading prompts are Chinese. This is localization of the orientation layer, not a translation of the paper. Source headings and quotations stay as imported unless an append-only TranslationRecord supplies their translation.
-
-## Repository boundary
-
-PaperWeaver and ContextWeaver are sibling repositories, not a monorepo and not mutually nested repositories. A local parent directory may contain both, but each working tree has exactly one Git history and one primary remote. They communicate only through documented file contracts or future versioned packages. Git submodules and copied implementation are intentionally out of scope: they would couple releases before a shared abstraction has demonstrated a stable need.
+The CLI exposes only the workflow required to create those deliverables: project initialization/import, segmentation, translation intake and validation, translation export, summary intake, and summary export. Guides, argument maps, glossary/entity interfaces, and bilingual output are intentionally not part of the current product surface.

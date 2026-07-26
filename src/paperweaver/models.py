@@ -50,15 +50,6 @@ class PaperSection(Record):
 
 
 @dataclass(frozen=True)
-class ReadingGuide(Record):
-    title: str
-    abstract: str | None
-    sections: list[PaperSection] = field(default_factory=list)
-    questions: list[str] = field(default_factory=list)
-    inventory: PaperInventory | None = None
-
-
-@dataclass(frozen=True)
 class Passage(Record):
     """The smallest translatable paper unit; ID remains stable for unchanged source text."""
 
@@ -125,8 +116,16 @@ class TranslationRecord(Record):
 
 
 @dataclass(frozen=True)
-class GuidePoint(Record):
-    category: Literal["question", "method", "evidence", "boundary"]
-    statement: str
+class ChineseSummaryRecord(Record):
+    """A reviewable Chinese whole-paper summary, separate from source and translation records."""
+
+    id: str
+    overview: str
+    methods: str
+    conclusions: str
+    limitations: str
     evidence_passage_ids: list[str]
-    confidence: float
+    adapter: str
+    model: str
+    created_at: str
+    supersedes: str | None = None
