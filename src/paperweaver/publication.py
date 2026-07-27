@@ -56,7 +56,8 @@ def render_translation_pdf(markdown: Path) -> Path:
             asset = markdown.parent / "assets" / line.split("](assets/", 1)[1].rstrip(")")
             image = Image(str(asset))
             image._restrictSize(155 * mm, 180 * mm)
-            story.extend([image, Spacer(1, 6)])
+            caption = line[2:].split("]", 1)[0]
+            story.extend([image, Spacer(1, 3), Paragraph(_mixed(caption), body), Spacer(1, 6)])
         else:
             story.append(Paragraph(_mixed(line), body))
             story.append(Spacer(1, 1))
