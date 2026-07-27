@@ -38,6 +38,10 @@ def render_translation_pdf(markdown: Path) -> Path:
         "ChineseBody", parent=styles["BodyText"], fontName=chinese_font, fontSize=10.5,
         leading=18, alignment=TA_JUSTIFY, firstLineIndent=21, spaceAfter=6,
     )
+    formula = ParagraphStyle(
+        "Formula", parent=body, alignment=TA_CENTER, firstLineIndent=0, fontSize=10,
+        leading=16, spaceAfter=6,
+    )
     document = SimpleDocTemplate(
         str(output), pagesize=A4, leftMargin=25 * mm, rightMargin=25 * mm,
         topMargin=22 * mm, bottomMargin=22 * mm, title="PaperWeaver translated paper",
@@ -52,6 +56,8 @@ def render_translation_pdf(markdown: Path) -> Path:
             story.append(Paragraph(_mixed(line[3:]), heading))
         elif line == "---":
             story.append(PageBreak())
+        elif line.startswith("$$ ") and line.endswith(" $$"):
+            story.append(Paragraph(_mixed(line[3:-3]), formula))
         elif line.startswith("![") and "](assets/" in line:
             asset = markdown.parent / "assets" / line.split("](assets/", 1)[1].rstrip(")")
             image = Image(str(asset))
@@ -77,12 +83,12 @@ def _register_chinese_font() -> str:
 
 
 def _mixed(text: str) -> str:
-    escaped = html.escape(text).replace("&amp;", "@@@")
+    escaped = html.escape(text).replace("&amp;", "@@@").replace("&#x27;", "%%%")
     mixed = re.sub(
         r"([A-Za-z0-9][A-Za-z0-9 .,:;()/%+*=\-–]*[A-Za-z0-9])",
         r'<font name="Times-Roman">\1</font>', escaped,
     )
-    return mixed.replace("@@@", "&amp;")
+    return mixed.replace("@@@", "&amp;").replace("%%%", "&#x27;")
 
 
 def _page_number(canvas, document) -> None:

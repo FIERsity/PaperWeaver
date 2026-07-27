@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 from pathlib import Path
@@ -231,7 +232,10 @@ def export_translated_markdown(root: Path) -> Path:
                 lines.extend([f"## {_localized_section_title(item.section_title, paper['target_language'])}", ""])
                 current_section = item.section_title
             translated = active[item.id].translated_text
-            lines.extend(_jats_visual_block(root, translated) if _is_visual_marker(translated) else [translated, ""])
+            if _is_visual_marker(translated):
+                lines.extend(_jats_visual_block(root, translated))
+            else:
+                lines.extend(_separate_display_formula(translated))
     lines.extend(_jats_references(root))
     output = root / "output" / "translated.md"
     output.write_text("\n".join(lines), encoding="utf-8")
@@ -240,6 +244,14 @@ def export_translated_markdown(root: Path) -> Path:
 
 def _is_visual_marker(text: str) -> bool:
     return text.startswith(("[图：图", "[表：表"))
+
+
+def _separate_display_formula(text: str) -> list[str]:
+    """Move a terminal numbered equation out of narrative text without changing its translation record."""
+    match = re.match(r"^(?P<intro>.*?[：:])(?P<formula>[A-Za-z][^。]*?（\d+）)[。.]?$", text)
+    if not match:
+        return [text, ""]
+    return [match.group("intro"), "", f"$$ {match.group('formula')} $$", ""]
 
 
 def _jats_front_matter(root: Path) -> list[str]:

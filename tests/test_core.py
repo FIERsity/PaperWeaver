@@ -8,6 +8,7 @@ from paperweaver.publication import SONGTI_NAME, _register_chinese_font, render_
 from paperweaver.summary import export_chinese_summary, import_chinese_summary
 from paperweaver.translation import (
     MockTranslationAdapter,
+    _separate_display_formula,
     export_translated_markdown,
     import_translation_draft,
     segment_paper,
@@ -63,6 +64,12 @@ def test_translation_export_rejects_incomplete_coverage(tmp_path: Path) -> None:
     project = _project(tmp_path)
     with pytest.raises(RuntimeError, match="incomplete"):
         export_translated_markdown(project)
+
+
+def test_terminal_numbered_formula_is_rendered_as_a_display_block() -> None:
+    assert _separate_display_formula("具体公式如下：lnEPit=η0+η1DEit（1）") == [
+        "具体公式如下：", "", "$$ lnEPit=η0+η1DEit（1） $$", ""
+    ]
 
 
 def test_jats_export_retains_authors_and_original_language_references(tmp_path: Path) -> None:
