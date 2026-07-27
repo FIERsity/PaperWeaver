@@ -4,7 +4,7 @@ import pytest
 
 from paperweaver.cli import run
 from paperweaver.core import import_paper, init_project, parse_sections
-from paperweaver.publication import render_translation_pdf
+from paperweaver.publication import SONGTI_NAME, _register_chinese_font, render_translation_pdf
 from paperweaver.summary import export_chinese_summary, import_chinese_summary
 from paperweaver.translation import (
     MockTranslationAdapter,
@@ -56,6 +56,7 @@ def test_completed_translation_exports_markdown_and_pdf(tmp_path: Path) -> None:
     assert "## Methods" not in markdown.read_text(encoding="utf-8")
     pdf = render_translation_pdf(markdown)
     assert pdf.exists() and pdf.read_bytes().startswith(b"%PDF")
+    assert _register_chinese_font() == SONGTI_NAME
 
 
 def test_translation_export_rejects_incomplete_coverage(tmp_path: Path) -> None:

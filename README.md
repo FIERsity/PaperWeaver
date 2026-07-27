@@ -9,7 +9,7 @@ It deliberately does not try to be a general reading-guide, knowledge-graph, or 
 
 ## Status
 
-Version 0.4 imports Markdown, TXT, and JATS XML, preserves the original source digest, derives stable paragraph Passages, accepts append-only Agent translations, validates complete coverage, and exports `translated.md` plus `pdf/translated.pdf`. It also accepts an evidence-cited Chinese summary draft and exports `中文全文摘要.md`. PDF output uses Songti for Chinese and Times Roman for Latin runs.
+Version 0.4 imports Markdown, TXT, and JATS XML, preserves the original source digest, derives stable paragraph Passages, accepts append-only Agent translations, validates complete coverage, and exports `translated.md` plus `pdf/translated.pdf`. It also accepts an evidence-cited Chinese summary draft and exports `中文全文摘要.md`. On macOS, PDF output uses the system Songti font collection for Chinese and Times Roman for Latin runs; other platforms fall back to the bundled CJK PDF font.
 
 PDF/DOCX source import, online model adapters, embedded figure binaries, automatic summary generation, and journal-faithful layout are intentionally out of scope for now.
 

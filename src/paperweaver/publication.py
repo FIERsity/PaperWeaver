@@ -12,25 +12,30 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer
+
+SONGTI_PATH = Path("/System/Library/Fonts/Supplemental/Songti.ttc")
+SONGTI_NAME = "SongtiSC"
+SONGTI_REGULAR_INDEX = 6
 
 
 def render_translation_pdf(markdown: Path) -> Path:
     """Render translated Markdown to A4 PDF using Songti for CJK and Times for Latin runs."""
     output = markdown.parent / "pdf" / "translated.pdf"
     output.parent.mkdir(parents=True, exist_ok=True)
-    pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+    chinese_font = _register_chinese_font()
     styles = getSampleStyleSheet()
     title = ParagraphStyle(
-        "ChineseTitle", parent=styles["Title"], fontName="STSong-Light", fontSize=18,
+        "ChineseTitle", parent=styles["Title"], fontName=chinese_font, fontSize=18,
         leading=25, alignment=TA_CENTER, spaceAfter=16,
     )
     heading = ParagraphStyle(
-        "ChineseHeading", parent=styles["Heading2"], fontName="STSong-Light", fontSize=14,
+        "ChineseHeading", parent=styles["Heading2"], fontName=chinese_font, fontSize=14,
         leading=20, spaceBefore=14, spaceAfter=8,
     )
     body = ParagraphStyle(
-        "ChineseBody", parent=styles["BodyText"], fontName="STSong-Light", fontSize=10.5,
+        "ChineseBody", parent=styles["BodyText"], fontName=chinese_font, fontSize=10.5,
         leading=18, alignment=TA_JUSTIFY, firstLineIndent=21, spaceAfter=6,
     )
     document = SimpleDocTemplate(
@@ -52,6 +57,17 @@ def render_translation_pdf(markdown: Path) -> Path:
             story.append(Spacer(1, 1))
     document.build(story, onFirstPage=_page_number, onLaterPages=_page_number)
     return output
+
+
+def _register_chinese_font() -> str:
+    """Use the macOS Songti collection when present; retain a portable CJK fallback."""
+    if SONGTI_PATH.exists():
+        if SONGTI_NAME not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont(SONGTI_NAME, str(SONGTI_PATH), subfontIndex=SONGTI_REGULAR_INDEX))
+        return SONGTI_NAME
+    if "STSong-Light" not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+    return "STSong-Light"
 
 
 def _mixed(text: str) -> str:
