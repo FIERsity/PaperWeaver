@@ -232,8 +232,8 @@ def export_translated_markdown(root: Path) -> Path:
                 lines.extend([f"## {_localized_section_title(item.section_title, paper['target_language'])}", ""])
                 current_section = item.section_title
             translated = active[item.id].translated_text
-            if _is_visual_marker(translated):
-                lines.extend(_jats_visual_block(root, translated))
+            if _is_source_visual(item.text):
+                lines.extend(_jats_visual_block(root, item.text, translated))
             else:
                 lines.extend(_separate_display_formula(translated))
     lines.extend(_jats_references(root))
@@ -242,8 +242,8 @@ def export_translated_markdown(root: Path) -> Path:
     return output
 
 
-def _is_visual_marker(text: str) -> bool:
-    return text.startswith(("[图：图", "[表：表"))
+def _is_source_visual(text: str) -> bool:
+    return text.startswith(("[Figure:", "[Table:"))
 
 
 def _separate_display_formula(text: str) -> list[str]:
@@ -275,23 +275,26 @@ def _jats_front_matter(root: Path) -> list[str]:
     return lines
 
 
-def _jats_visual_block(root: Path, marker: str) -> list[str]:
+def _jats_visual_block(root: Path, source_marker: str, translated_caption: str) -> list[str]:
     article = _jats_article(root)
     if article is None:
-        return [marker, ""]
-    label = marker.split("]", 1)[0].removeprefix("[")
-    number = label.split("：", 1)[-1].removeprefix("图").removeprefix("表")
-    tag = "fig" if label.startswith("图") else "table-wrap"
+        return [translated_caption, ""]
+    match = re.match(r"^\[(Figure|Table): (?:Fig|Table) (\d+)\]", source_marker)
+    if match is None:
+        return [translated_caption, ""]
+    kind, number = match.groups()
+    tag = "fig" if kind == "Figure" else "table-wrap"
     item = next((node for node in _descendants(article, tag) if _text(_first(node, "label")) in {f"Fig {number}", f"Table {number}"}), None)
     if item is None:
-        return [marker, ""]
+        return [translated_caption, ""]
     doi = _text(_first(item, "object-id"))
     if not doi:
-        return [marker, ""]
+        return [translated_caption, ""]
     prefix = "figure" if tag == "fig" else "table"
     asset = root / "output" / "assets" / f"{prefix}-{number}.png"
     _download_plos_visual(doi, asset)
-    caption = marker.split("]", 1)[1].strip()
+    label = f"{'图' if tag == 'fig' else '表'}：{'图' if tag == 'fig' else '表'}{number}"
+    caption = translated_caption.split("]", 1)[1].strip() if "]" in translated_caption else translated_caption
     return [f"![{label} {caption}](assets/{asset.name})", ""]
 
 

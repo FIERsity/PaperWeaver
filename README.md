@@ -65,6 +65,10 @@ output/
 
 `export-translation` refuses incomplete translation coverage. `summary-import` requires every summary to cite imported Passage IDs. Both choices favor an explicit failure over a plausible-looking but incomplete publication.
 
+## JATS edition contract
+
+For a JATS paper whose figures and tables use PLOS DOI graphic resources, `export-translation` always includes, in source order: Chinese main text and headings; authors and affiliations; original figures and tables with Chinese captions; display equations on their own centered lines; and the original-language reference list. The layout layer, rather than an Agent's formatting habits, detects these source structures. A missing or invalid graphic resource stops the export with an error.
+
 ## Development
 
 See [AGENTS.md](AGENTS.md) and [docs/architecture.md](docs/architecture.md). This project is pre-alpha; keep changes small, tested, and compatible with existing translation records.
