@@ -65,6 +65,26 @@ def test_translation_export_rejects_incomplete_coverage(tmp_path: Path) -> None:
         export_translated_markdown(project)
 
 
+def test_jats_export_retains_authors_and_original_language_references(tmp_path: Path) -> None:
+    source = tmp_path / "paper.xml"
+    source.write_text(
+        """<article><front><article-meta><title-group><article-title>Study</article-title></title-group>
+        <contrib-group><contrib contrib-type="author"><name><surname>Yuan</surname><given-names>Honglin</given-names></name></contrib></contrib-group>
+        <aff>Example University, China</aff></article-meta></front><body><sec><title>Methods</title><p>Method text.</p></sec></body>
+        <back><ref-list><ref><label>1</label><mixed-citation>Smith J. (2024). Example reference.</mixed-citation></ref></ref-list></back></article>""",
+        encoding="utf-8",
+    )
+    project = tmp_path / "project"
+    init_project(project, "研究", "en", "zh-CN")
+    import_paper(project, source)
+    segment_paper(project)
+    translate_paper(project, MockTranslationAdapter())
+    exported = export_translated_markdown(project).read_text(encoding="utf-8")
+    assert "## 作者" in exported and "Honglin Yuan" in exported
+    assert "## 作者单位" in exported and "Example University, China" in exported
+    assert "## 参考文献" in exported and "Smith J. (2024). Example reference." in exported
+
+
 def test_translation_import_appends_a_revision(tmp_path: Path) -> None:
     project = _project(tmp_path)
     passages, _ = segment_paper(project, unit_size=1)

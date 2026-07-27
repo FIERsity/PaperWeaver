@@ -13,7 +13,7 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer
+from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer
 
 SONGTI_PATH = Path("/System/Library/Fonts/Supplemental/Songti.ttc")
 SONGTI_NAME = "SongtiSC"
@@ -52,6 +52,11 @@ def render_translation_pdf(markdown: Path) -> Path:
             story.append(Paragraph(_mixed(line[3:]), heading))
         elif line == "---":
             story.append(PageBreak())
+        elif line.startswith("![") and "](assets/" in line:
+            asset = markdown.parent / "assets" / line.split("](assets/", 1)[1].rstrip(")")
+            image = Image(str(asset))
+            image._restrictSize(155 * mm, 180 * mm)
+            story.extend([image, Spacer(1, 6)])
         else:
             story.append(Paragraph(_mixed(line), body))
             story.append(Spacer(1, 1))
@@ -71,11 +76,12 @@ def _register_chinese_font() -> str:
 
 
 def _mixed(text: str) -> str:
-    escaped = html.escape(text)
-    return re.sub(
+    escaped = html.escape(text).replace("&amp;", "@@@")
+    mixed = re.sub(
         r"([A-Za-z0-9][A-Za-z0-9 .,:;()/%+*=\-–]*[A-Za-z0-9])",
         r'<font name="Times-Roman">\1</font>', escaped,
     )
+    return mixed.replace("@@@", "&amp;")
 
 
 def _page_number(canvas, document) -> None:

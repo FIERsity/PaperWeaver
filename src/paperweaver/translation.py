@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
+from urllib.request import urlopen
 
 from .models import (
     Entity,
@@ -219,6 +221,7 @@ def export_translated_markdown(root: Path) -> Path:
     active = active_translations(read_jsonl(root / STATE / "translations.jsonl", TranslationRecord))
     paper = json.loads((root / "paper.json").read_text(encoding="utf-8"))
     lines = [f"# {paper['title']}", ""]
+    lines.extend(_jats_front_matter(root))
     current_section: str | None = None
     for item in passages:
         if item.kind == "structural":
@@ -227,10 +230,99 @@ def export_translated_markdown(root: Path) -> Path:
             if item.section_title != current_section:
                 lines.extend([f"## {_localized_section_title(item.section_title, paper['target_language'])}", ""])
                 current_section = item.section_title
-            lines.extend([active[item.id].translated_text, ""])
+            translated = active[item.id].translated_text
+            lines.extend(_jats_visual_block(root, translated) if _is_visual_marker(translated) else [translated, ""])
+    lines.extend(_jats_references(root))
     output = root / "output" / "translated.md"
     output.write_text("\n".join(lines), encoding="utf-8")
     return output
+
+
+def _is_visual_marker(text: str) -> bool:
+    return text.startswith(("[图：图", "[表：表"))
+
+
+def _jats_front_matter(root: Path) -> list[str]:
+    article = _jats_article(root)
+    if article is None:
+        return []
+    authors = []
+    for item in _descendants(article, "contrib"):
+        if item.attrib.get("contrib-type") != "author":
+            continue
+        surname = _text(_first(item, "surname"))
+        given = _text(_first(item, "given-names"))
+        if surname or given:
+            authors.append(" ".join(part for part in (given, surname) if part))
+    affiliations = [_text(item) for item in _descendants(article, "aff") if _text(item)]
+    lines = []
+    if authors:
+        lines.extend(["## 作者", "", ", ".join(authors), ""])
+    if affiliations:
+        lines.extend(["## 作者单位", "", *affiliations, ""])
+    return lines
+
+
+def _jats_visual_block(root: Path, marker: str) -> list[str]:
+    article = _jats_article(root)
+    if article is None:
+        return [marker, ""]
+    label = marker.split("]", 1)[0].removeprefix("[")
+    number = label.split("：", 1)[-1].removeprefix("图").removeprefix("表")
+    tag = "fig" if label.startswith("图") else "table-wrap"
+    item = next((node for node in _descendants(article, tag) if _text(_first(node, "label")) in {f"Fig {number}", f"Table {number}"}), None)
+    if item is None:
+        return [marker, ""]
+    doi = _text(_first(item, "object-id"))
+    if not doi:
+        return [marker, ""]
+    prefix = "figure" if tag == "fig" else "table"
+    asset = root / "output" / "assets" / f"{prefix}-{number}.png"
+    _download_plos_visual(doi, asset)
+    caption = marker.split("]", 1)[1].strip()
+    return [f"![{label} {caption}](assets/{asset.name})", ""]
+
+
+def _download_plos_visual(doi: str, destination: Path) -> None:
+    if destination.exists() and destination.stat().st_size > 100:
+        return
+    url = f"https://journals.plos.org/plosone/article/figure/image?size=large&id={doi}"
+    try:
+        with urlopen(url, timeout=45) as response:
+            data = response.read()
+    except OSError as error:
+        raise RuntimeError(f"Unable to download JATS visual {doi}: {error}") from error
+    if not data.startswith(b"\x89PNG"):
+        raise RuntimeError(f"JATS visual {doi} did not return a PNG")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(data)
+
+
+def _jats_references(root: Path) -> list[str]:
+    article = _jats_article(root)
+    if article is None:
+        return []
+    references = [_text(item) for item in _descendants(article, "ref") if _text(item)]
+    return ["## 参考文献", "", *(f"{item}" for item in references), ""] if references else []
+
+
+def _jats_article(root: Path) -> ET.Element | None:
+    path = root / "source" / "original.xml"
+    if not path.exists():
+        return None
+    return ET.fromstring(path.read_bytes())
+
+
+def _descendants(element: ET.Element, name: str):
+    return (item for item in element.iter() if item.tag.rsplit("}", 1)[-1] == name)
+
+
+def _first(element: ET.Element, name: str) -> ET.Element | None:
+    return next(_descendants(element, name), None)
+
+
+def _text(element: ET.Element | None) -> str:
+    return " ".join("".join(element.itertext()).split()) if element is not None else ""
 
 
 def _source_markdown(root: Path) -> str:
