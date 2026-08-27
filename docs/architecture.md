@@ -25,6 +25,10 @@ differences. Network bootstrap writes only to ignored `tmp/corpus-cache/`; batch
 new timestamped workspaces and aggregate reports under `tmp/corpus-runs/`. A changed source
 digest is rejected rather than silently accepted. Default tests remain offline and synthetic,
 while opt-in corpus runs preserve the complete per-paper evidence ledger for diagnosis.
-PLOS PDF/JATS pairs are additionally compared with exact LCS/shortest-edit token alignment;
-reviewed recall, precision, and order minima make corpus regressions fail CI. The JOSS paper is
+PLOS PDF/JATS pairs are additionally compared with partitioned prose/table exact
+LCS/shortest-edit token alignment; pinned per-paper floors (`tests/corpus/semantic-floors.json`,
+movable only via `pdf_corpus.py pin-floors`) make corpus regressions fail, and `scripts/check.sh`
+runs the same slice before every commit. The JOSS paper is
 also held to a `complete` status gate and an opt-in end-to-end segment/translation/export test.
+
+The product form, the one-door proposal protocol for model contributions, and the quality-gate discipline are pinned in `strategy.md`; this document describes how the current implementation realizes it.

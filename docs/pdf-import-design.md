@@ -8,6 +8,8 @@ P1 实现了不可变原件、稳定 run/block/object 身份、带摘要的字�
 
 ## 0. 摘要与最终拍板
 
+> 全局组织策略（产品形态、一个门 proposal 协议、质量纪律与路线顺序）定稿见 [`strategy.md`](strategy.md)；本设计文档只覆盖 PDF 导入管线。
+
 本设计为 PaperWeaver 增加以下入口：
 
 ```text
