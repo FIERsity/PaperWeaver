@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from .models import Paper, PaperInventory, PaperSection, PaperSource
+from .storage import atomic_write_json
 
 
 def init_project(root: Path, title: str, source_language: str, target_language: str) -> Paper:
@@ -21,15 +22,68 @@ def init_project(root: Path, title: str, source_language: str, target_language: 
     return paper
 
 
-def import_paper(root: Path, source: Path) -> PaperSource:
-    if source.suffix.lower() not in {".md", ".markdown", ".txt", ".xml"}:
-        raise ValueError("Version 0.4 supports Markdown, TXT, and JATS XML; DOCX/PDF are not supported")
+def import_paper(
+    root: Path, source: Path, *, pdf_policy: Path | None = None
+) -> PaperSource:
+    if source.suffix.lower() not in {".md", ".markdown", ".txt", ".xml", ".pdf"}:
+        raise ValueError("PaperWeaver supports Markdown, TXT, JATS XML, and PDF sources")
     _require_project(root)
+    requested_policy_digest = None
+    if source.suffix.lower() == ".pdf":
+        from .pdf_contracts import PdfUnsupportedError, load_policy
+
+        policy, requested_policy_digest = load_policy(pdf_policy)
+        if source.stat().st_size > policy["max_file_bytes"]:
+            raise PdfUnsupportedError(
+                f"PDF_RESOURCE_LIMIT: {source.stat().st_size} bytes exceeds "
+                f"{policy['max_file_bytes']}"
+            )
     data = source.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
-    destination = root / "source" / "article.md"
-    if destination.exists() and destination.read_bytes() != data:
+    source_record = root / "source" / "source.json"
+    if source_record.exists():
+        existing = PaperSource(**json.loads(source_record.read_text(encoding="utf-8")))
+        if existing.sha256 == digest:
+            if existing.format == "pdf":
+                from .pdf_contracts import validate_pdf_project
+
+                validate_pdf_project(root, require_complete=False)
+                if pdf_policy is not None:
+                    manifest = json.loads(
+                        (root / "source" / "pdf" / "manifest.json").read_text(
+                            encoding="utf-8"
+                        )
+                    )
+                    if manifest["policy"]["sha256"] != requested_policy_digest:
+                        raise ValueError(
+                            "PDF_POLICY_MISMATCH: source was imported with a different policy"
+                        )
+            return existing
         raise FileExistsError("A different source is already imported; create a new project")
+    destination = root / "source" / "article.md"
+    if destination.exists():
+        interrupted_pdf = root / "source" / "original.pdf"
+        pending = root / "source" / "pdf-import.pending.json"
+        pending_digest = None
+        if pending.exists():
+            pending_digest = json.loads(pending.read_text(encoding="utf-8")).get("source_sha256")
+        if not (
+            source.suffix.lower() == ".pdf"
+            and (
+                pending_digest == digest
+                or (
+                    interrupted_pdf.exists()
+                    and hashlib.sha256(interrupted_pdf.read_bytes()).hexdigest() == digest
+                )
+            )
+        ):
+            raise FileExistsError(
+                "Source files exist without source.json; inspect or create a new project"
+            )
+    if source.suffix.lower() == ".pdf":
+        from .pdf_import import import_pdf
+
+        return import_pdf(root, source, data, policy_path=pdf_policy)
     source_format = "jats" if source.suffix.lower() == ".xml" else source.suffix.lower().lstrip(".")
     if source_format == "jats":
         markdown, title, inventory = _import_jats(data)
@@ -173,4 +227,4 @@ def _require_project(root: Path) -> Paper:
 
 
 def _write_json(path: Path, value: dict[str, object]) -> None:
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(path, value)

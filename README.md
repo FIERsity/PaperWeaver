@@ -9,9 +9,15 @@ It deliberately does not try to be a general reading-guide, knowledge-graph, or 
 
 ## Status
 
-Version 0.4 imports Markdown, TXT, and JATS XML, preserves the original source digest, derives stable paragraph Passages, accepts append-only Agent translations, validates complete coverage, and exports `translated.md` plus `pdf/translated.pdf`. For JATS sources, the edition also retains authors and affiliations, downloads source figures and tables into `output/assets/` at their original positions, and appends the original-language reference list. It also accepts an evidence-cited Chinese summary draft and exports `中文全文摘要.md`. On macOS, PDF output uses the system Songti font collection for Chinese and Times Roman for Latin runs; other platforms fall back to the bundled CJK PDF font.
+Version 0.5 adds the first deterministic PDF import slice. With the optional `[pdf]` dependencies, born-digital journal PDFs are copied unchanged to `source/original.pdf`, identified by SHA-256, converted into page/bbox-located blocks, and rendered as an anchored `source/article.md` with machine-readable and human-readable QA reports. Repeated headers and page numbers are retained in the evidence ledger but excluded from Markdown; local one/two-column text order is reconstructed deterministically.
 
-PDF/DOCX source import, online model adapters, embedded figure binaries, automatic summary generation, and journal-faithful layout are intentionally out of scope for now.
+The PDF gate is intentionally conservative. Any unresolved glyph, page/vector region, table structure, equation, or ambiguous layout makes the import `incomplete` and prevents `segment`. The implemented P2/P3 core resolves boxed tables (verified when the rule grid closes and every cell character is accounted) into pipe tables, projects translatable cells into Passage slots, and reassembles their translations without exposing Markdown syntax to the model. Caption-bounded image/vector clusters become `figure` blocks with content-addressed crops and separate translatable captions. Simple selectable display equations are promoted only when every baseline/script/number glyph is consumed by a restricted parser; other equations stay unresolved crops. Unboxed/span tables and ambiguous or captionless figures remain honest crops.
+
+PDF translation export now walks the same render tree as source materialization: figures, translated captions, literal formulas, table cells, references, and assets retain their structure, and pipe tables render as real tables in the A4 PDF. QA also emits page/block `ocr_candidates`; no OCR engine runs automatically, and rotation alone never triggers OCR. Agent repair drafts, scanned-page OCR, and complex formula/table recovery remain later phases described in [the PDF import design](docs/pdf-import-design.md).
+
+Markdown, TXT, and JATS XML retain the v0.4 workflow: stable paragraph Passages, append-only Agent translations, complete coverage validation, `translated.md` plus `pdf/translated.pdf`, and an evidence-cited Chinese summary. JATS editions also retain authors, affiliations, source visuals, and original-language references.
+
+Scanned PDF OCR, complex/raster formula and unboxed/span table recovery, DOCX source import, online model adapters, automatic summary generation, and journal-faithful layout are intentionally out of scope for now.
 
 ## Quick start
 
@@ -20,7 +26,7 @@ Python 3.11 or newer is required.
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install -e '.[dev]'
+python -m pip install -e '.[dev,pdf]'
 
 paperweaver init my-paper --title "论文中文题名"
 paperweaver import my-paper paper.xml
@@ -35,6 +41,17 @@ paperweaver export-translation my-paper
 paperweaver summary-import my-paper summary.json --model my-model
 paperweaver export-summary my-paper
 ```
+
+For a PDF source, inspect the deterministic gate before segmentation:
+
+```bash
+paperweaver import my-paper paper.pdf
+paperweaver pdf-status my-paper
+paperweaver pdf-validate my-paper
+paperweaver segment my-paper  # accepted only when PDF status is complete
+```
+
+`import` returns 0 for complete, 2 for incomplete, and 3 for a valid PDF outside the active born-digital policy. A fatal parse/backend error returns 1 and does not commit a PDF source.
 
 `translations.jsonl` must contain one JSON object per source Passage:
 
@@ -71,4 +88,19 @@ For a JATS paper whose figures and tables use PLOS DOI graphic resources, `expor
 
 ## Development
 
-See [AGENTS.md](AGENTS.md) and [docs/architecture.md](docs/architecture.md). This project is pre-alpha; keep changes small, tested, and compatible with existing translation records.
+See [AGENTS.md](AGENTS.md), [docs/architecture.md](docs/architecture.md), and [examples/pdf-import-workflow.md](examples/pdf-import-workflow.md). This project is pre-alpha; keep changes small, tested, and compatible with existing translation records.
+
+Real-paper PDF regression uses a checksum-pinned open corpus in
+[`tests/corpus/pdf-jats-manifest.json`](tests/corpus/pdf-jats-manifest.json). The committed
+manifest currently covers PLOS PDF/JATS pairs, modern and older one/two-column papers,
+table/equation/figure-heavy layouts, and public-domain scans. Paper bytes stay in ignored
+`tmp/corpus-cache/`; bootstrap and batch runs are always explicit:
+
+```bash
+python scripts/pdf_corpus.py fetch
+python scripts/pdf_corpus.py verify
+python scripts/pdf_corpus.py run --jobs 2
+```
+
+Default `pytest` never downloads papers. See [`tests/corpus/README.md`](tests/corpus/README.md)
+for license, checksum, selection, and opt-in integration-test rules.

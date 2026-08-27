@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from pathlib import Path
 
 from .core import import_paper, init_project
+from .pdf_contracts import PdfUnsupportedError, pdf_status
 from .publication import render_translation_pdf
 from .summary import export_chinese_summary, import_chinese_summary
 from .translation import (
@@ -18,6 +20,8 @@ from .translation import (
     validate_translations,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="paperweaver")
@@ -27,9 +31,10 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--title", required=True)
     init.add_argument("--source-language", default="en")
     init.add_argument("--target-language", default="zh-CN")
-    imported = commands.add_parser("import", help="Import a Markdown, TXT, or JATS XML paper")
+    imported = commands.add_parser("import", help="Import a Markdown, TXT, JATS XML, or PDF paper")
     imported.add_argument("project", type=Path)
     imported.add_argument("source", type=Path)
+    imported.add_argument("--pdf-policy", type=Path)
     segment = commands.add_parser("segment", help="Create stable paper Passages and TranslationUnits")
     segment.add_argument("project", type=Path)
     segment.add_argument("--unit-size", type=int, default=2)
@@ -55,6 +60,11 @@ def parser() -> argparse.ArgumentParser:
     summary.add_argument("--model", required=True)
     summary_export = commands.add_parser("export-summary", help="Export the latest Chinese whole-paper summary")
     summary_export.add_argument("project", type=Path)
+    status = commands.add_parser("pdf-status", help="Show PDF import QA status")
+    status.add_argument("project", type=Path)
+    status.add_argument("--json", action="store_true")
+    pdf_validate = commands.add_parser("pdf-validate", help="Apply the PDF import completion gate")
+    pdf_validate.add_argument("project", type=Path)
     return root
 
 
@@ -63,7 +73,9 @@ def run(arguments: list[str] | None = None) -> int:
     if args.command == "init":
         init_project(args.project, args.title, args.source_language, args.target_language)
     elif args.command == "import":
-        import_paper(args.project, args.source)
+        imported = import_paper(args.project, args.source, pdf_policy=args.pdf_policy)
+        if imported.format == "pdf":
+            return _pdf_exit_code(pdf_status(args.project))
     elif args.command == "segment":
         segment_paper(args.project, args.unit_size)
     elif args.command == "translate":
@@ -83,11 +95,38 @@ def run(arguments: list[str] | None = None) -> int:
         render_translation_pdf(export_translated_markdown(args.project))
     elif args.command == "summary-import":
         import_chinese_summary(args.project, args.draft, args.adapter, args.model)
-    else:
+    elif args.command == "export-summary":
         export_chinese_summary(args.project)
+    elif args.command == "pdf-status":
+        pdf_status(args.project)
+        manifest = json.loads(
+            (args.project / "source" / "pdf" / "manifest.json").read_text(encoding="utf-8")
+        )
+        print(json.dumps(manifest, ensure_ascii=False, indent=2) if args.json else manifest["status"])
+    else:
+        status = pdf_status(args.project)
+        qa = json.loads(
+            (args.project / "source" / "pdf" / "qa.json").read_text(encoding="utf-8")
+        )
+        for issue in qa["issues"]:
+            print(f"{issue['severity']} {issue['code']}: {issue['message']}")
+        return _pdf_exit_code(status)
     return 0
+
+
+def _pdf_exit_code(status: str) -> int:
+    return {"complete": 0, "complete_with_warnings": 0, "incomplete": 2,
+            "unsupported": 3, "fatal": 1}[status]
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    raise SystemExit(run())
+    try:
+        code = run()
+    except PdfUnsupportedError as error:
+        logger.error("%s", error)
+        code = 3
+    except (FileExistsError, FileNotFoundError, RuntimeError, ValueError) as error:
+        logger.error("%s", error)
+        code = 1
+    raise SystemExit(code)

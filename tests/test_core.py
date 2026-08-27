@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -129,6 +130,45 @@ def test_translation_import_appends_a_revision(tmp_path: Path) -> None:
         '{"passage_id": "' + passages[0].id + '", "translated_text": "修订译文"}\n', encoding="utf-8"
     )
     assert import_translation_draft(project, draft, "agent", "test", "revision") == 1
+
+
+def test_translation_import_is_atomic_and_rejects_duplicate_passages(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    passages, _ = segment_paper(project, unit_size=1)
+    translations = project / "state" / "translations.jsonl"
+    before = translations.read_bytes()
+    draft = tmp_path / "broken-translation.jsonl"
+    draft.write_text(
+        json.dumps({"passage_id": passages[0].id, "translated_text": "初译"})
+        + "\n{not json}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="invalid JSON"):
+        import_translation_draft(project, draft, "agent", "test", "initial")
+    assert translations.read_bytes() == before
+
+    row = json.dumps({"passage_id": passages[0].id, "translated_text": "初译"})
+    draft.write_text(row + "\n" + row + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate passage"):
+        import_translation_draft(project, draft, "agent", "test", "initial")
+    assert translations.read_bytes() == before
+
+
+def test_translation_revision_chain_tampering_is_rejected(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    passages, _ = segment_paper(project, unit_size=1)
+    draft = tmp_path / "translation.jsonl"
+    draft.write_text(
+        json.dumps({"passage_id": passages[0].id, "translated_text": "初译"}) + "\n",
+        encoding="utf-8",
+    )
+    import_translation_draft(project, draft, "agent", "test", "initial")
+    path = project / "state" / "translations.jsonl"
+    row = json.loads(path.read_text(encoding="utf-8"))
+    row["revision"] = 3
+    path.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="TRANSLATION_LEDGER_INVALID"):
+        validate_translations(project)
 
 
 def test_chinese_summary_requires_evidence_and_exports_four_parts(tmp_path: Path) -> None:

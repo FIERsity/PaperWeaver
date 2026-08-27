@@ -1,0 +1,303 @@
+{
+  "schema_version": 1,
+  "corpus_id": "open-pdf-regression-v1",
+  "description": "Checksum-pinned open papers selected for deterministic PDF import regression testing.",
+  "papers": [
+    {
+      "id": "pone-0251194",
+      "title": "A computational reproducibility study of PLOS ONE articles featuring longitudinal data analyses",
+      "year": 2021,
+      "repository": "PLOS ONE",
+      "landing_url": "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0251194",
+      "license": {
+        "identifier": "CC-BY-4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "evidence_url": "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0251194"
+      },
+      "layout_tags": ["single-column", "tables", "figures", "jats-oracle", "biomedical"],
+      "files": {
+        "pdf": {
+          "url": "https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0251194&type=printable",
+          "sha256": "6a47cc4198b87ba8bf93d38a1f3033162b88eedb62b6bcab618d17d43d5e089f",
+          "size_bytes": 614971,
+          "page_count": 15
+        },
+        "jats": {
+          "url": "https://journals.plos.org/plosone/article/file?id=10.1371/journal.pone.0251194&type=manuscript",
+          "sha256": "37d3b05f05cb13b3a9ae9ffc239454023b731c598af200b29667a2d430eda77e",
+          "size_bytes": 195264
+        }
+      },
+      "expected": {
+        "jats_elements": {"figures": 2, "tables": 4, "equations": 0, "references": 29},
+        "approved_differences": []
+      }
+    },
+    {
+      "id": "pcbi-1005331",
+      "title": "Scalable Parameter Estimation for Genome-Scale Biochemical Reaction Networks",
+      "year": 2017,
+      "repository": "PLOS Computational Biology",
+      "landing_url": "https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1005331",
+      "license": {
+        "identifier": "CC-BY-4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "evidence_url": "https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1005331"
+      },
+      "layout_tags": ["single-column", "equations", "figures", "jats-oracle", "long-paper"],
+      "files": {
+        "pdf": {
+          "url": "https://journals.plos.org/ploscompbiol/article/file?id=10.1371/journal.pcbi.1005331&type=printable",
+          "sha256": "462e558fd1f227a4b4ff3351ec9c962f38c9e3c72b71942ba54b1ceeae96734d",
+          "size_bytes": 3719890,
+          "page_count": 18
+        },
+        "jats": {
+          "url": "https://journals.plos.org/ploscompbiol/article/file?id=10.1371/journal.pcbi.1005331&type=manuscript",
+          "sha256": "b82494a1ffec1bca3d58d1372dc8b7b8af741752591c7670c7c5eb5d78adb0d0",
+          "size_bytes": 156461
+        }
+      },
+      "expected": {
+        "jats_elements": {"figures": 4, "tables": 1, "equations": 11, "references": 67},
+        "approved_differences": []
+      }
+    },
+    {
+      "id": "pcbi-1002377",
+      "title": "Branch Mode Selection during Early Lung Development",
+      "year": 2012,
+      "repository": "PLOS Computational Biology",
+      "landing_url": "https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1002377",
+      "license": {
+        "identifier": "CC-BY-4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "evidence_url": "https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1002377"
+      },
+      "layout_tags": ["old-double-column", "equations", "figures", "tables", "jats-oracle"],
+      "files": {
+        "pdf": {
+          "url": "https://journals.plos.org/ploscompbiol/article/file?id=10.1371/journal.pcbi.1002377&type=printable",
+          "sha256": "ee31c6b101bcc0d00b81b33e35a37e256f116c41527b02591db89ad06dcdb42f",
+          "size_bytes": 3378890,
+          "page_count": 12
+        },
+        "jats": {
+          "url": "https://journals.plos.org/ploscompbiol/article/file?id=10.1371/journal.pcbi.1002377&type=manuscript",
+          "sha256": "1864fb9605eb52130c7a0bfe5ec048444e6461d37c84c359ee8fa75806ac95ec",
+          "size_bytes": 190242
+        }
+      },
+      "expected": {
+        "jats_elements": {"figures": 7, "tables": 2, "equations": 13, "references": 85},
+        "approved_differences": []
+      }
+    },
+    {
+      "id": "pcbi-1012374",
+      "title": "Mathematical modeling reveals ferritin as the strongest cellular driver of dietary iron transfer block in enterocytes",
+      "year": 2025,
+      "repository": "PLOS Computational Biology",
+      "landing_url": "https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1012374",
+      "license": {
+        "identifier": "CC-BY-4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "evidence_url": "https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1012374"
+      },
+      "layout_tags": ["single-column", "long-paper", "equations", "tables", "jats-oracle"],
+      "files": {
+        "pdf": {
+          "url": "https://journals.plos.org/ploscompbiol/article/file?id=10.1371/journal.pcbi.1012374&type=printable",
+          "sha256": "80a77f7f3a5883a2cc12b03ba250e1a34fb917dbcfa34cb0ca31644f7432ea54",
+          "size_bytes": 2157601,
+          "page_count": 29
+        },
+        "jats": {
+          "url": "https://journals.plos.org/ploscompbiol/article/file?id=10.1371/journal.pcbi.1012374&type=manuscript",
+          "sha256": "b0b35adbf2f808380bde69614c7711226027fec3367ecc55f70f177132784ea9",
+          "size_bytes": 278623
+        }
+      },
+      "expected": {
+        "jats_elements": {"figures": 5, "tables": 7, "equations": 2, "references": 105},
+        "approved_differences": []
+      }
+    },
+    {
+      "id": "acl-tables-2024",
+      "title": "Tables as Texts or Images: Evaluating the Table Reasoning Ability of LLMs and MLLMs",
+      "year": 2024,
+      "repository": "ACL Anthology",
+      "landing_url": "https://aclanthology.org/2024.findings-acl.23/",
+      "license": {
+        "identifier": "CC-BY-4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "evidence_url": "https://aclanthology.org/faq/copyright/"
+      },
+      "layout_tags": ["double-column", "tables", "figures", "appendix", "nlp"],
+      "files": {
+        "pdf": {
+          "url": "https://aclanthology.org/2024.findings-acl.23.pdf",
+          "sha256": "16dad75866699a58e30c1131bf53bb388b23e7fc45a1080c33de82b2c373ffa5",
+          "size_bytes": 1099943,
+          "page_count": 20
+        }
+      },
+      "expected": {"jats_elements": {}, "approved_differences": []}
+    },
+    {
+      "id": "joss-04061",
+      "title": "The AutoActive Research Environment",
+      "year": 2022,
+      "repository": "Journal of Open Source Software",
+      "landing_url": "https://joss.theoj.org/papers/10.21105/joss.04061",
+      "license": {
+        "identifier": "CC-BY-4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "evidence_url": "https://joss.theoj.org/about"
+      },
+      "layout_tags": ["single-column", "short-paper", "figures", "software"],
+      "files": {
+        "pdf": {
+          "url": "https://joss.theoj.org/papers/10.21105/joss.04061.pdf",
+          "sha256": "d1d9f11e441c541a05266dbf3ea18a20a80e3aaf0d7699f706fbdb198c6871cf",
+          "size_bytes": 745923,
+          "page_count": 5
+        }
+      },
+      "expected": {"jats_elements": {}, "approved_differences": []}
+    },
+    {
+      "id": "frontiers-ketogenic-2022",
+      "title": "The Ketogenic Diet for Refractory Mental Illness: A Retrospective Analysis of 31 Inpatients",
+      "year": 2022,
+      "repository": "Frontiers in Psychiatry",
+      "landing_url": "https://www.frontiersin.org/journals/psychiatry/articles/10.3389/fpsyt.2022.951376/full",
+      "license": {
+        "identifier": "CC-BY-4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "evidence_url": "https://www.frontiersin.org/journals/psychiatry/articles/10.3389/fpsyt.2022.951376/full"
+      },
+      "layout_tags": ["double-column", "biomedical", "tables", "figures"],
+      "files": {
+        "pdf": {
+          "url": "https://www.frontiersin.org/journals/psychiatry/articles/10.3389/fpsyt.2022.951376/pdf",
+          "sha256": "eb11bccc8672c4ff85c0c29ad765f8e76c083cbd4565bb12c1f746a29ee9b109",
+          "size_bytes": 809984,
+          "page_count": 11
+        }
+      },
+      "expected": {"jats_elements": {}, "approved_differences": []}
+    },
+    {
+      "id": "nlm-rupture-uterus-1879",
+      "title": "Three Cases of Rupture of the Uterus",
+      "year": 1879,
+      "repository": "NLM Digital Collections",
+      "landing_url": "https://digirepo.nlm.nih.gov/catalog/nlm:nlmuid-101698850-pdf",
+      "license": {
+        "identifier": "PDM-1.0",
+        "url": "https://creativecommons.org/publicdomain/mark/1.0/",
+        "evidence_url": "https://pmc.ncbi.nlm.nih.gov/about/scanning/"
+      },
+      "layout_tags": ["historical", "scanned", "ocr", "old-font"],
+      "files": {
+        "pdf": {
+          "url": "https://digirepo.nlm.nih.gov/ext/dw/101698850/PDF/101698850.pdf",
+          "sha256": "4c702cb1650335af9651c2de044eeddbd4aa843bb039872322dac731bc98044d",
+          "size_bytes": 1620412,
+          "page_count": 16
+        }
+      },
+      "expected": {"jats_elements": {}, "approved_differences": []}
+    },
+    {
+      "id": "nougat-2308-13418",
+      "title": "Nougat: Neural Optical Understanding for Academic Documents",
+      "year": 2023,
+      "repository": "arXiv",
+      "landing_url": "https://arxiv.org/abs/2308.13418",
+      "license": {
+        "identifier": "CC-BY-SA-4.0",
+        "url": "https://creativecommons.org/licenses/by-sa/4.0/",
+        "evidence_url": "https://arxiv.org/abs/2308.13418"
+      },
+      "layout_tags": ["double-column", "equations", "figures", "appendix", "document-ai"],
+      "files": {
+        "pdf": {
+          "url": "https://arxiv.org/pdf/2308.13418",
+          "sha256": "679be336ce8010d3dc86b9530f0a30d4d5ea2a13153c6f274601b40f4382745b",
+          "size_bytes": 4133781,
+          "page_count": 17
+        }
+      },
+      "expected": {"jats_elements": {}, "approved_differences": []}
+    },
+    {
+      "id": "layoutparser-2103-15348",
+      "title": "LayoutParser: A Unified Toolkit for Deep Learning Based Document Image Analysis",
+      "year": 2021,
+      "repository": "arXiv",
+      "landing_url": "https://arxiv.org/abs/2103.15348",
+      "license": {
+        "identifier": "CC-BY-4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "evidence_url": "https://arxiv.org/abs/2103.15348"
+      },
+      "layout_tags": ["double-column", "figures", "tables", "appendix", "document-ai"],
+      "files": {
+        "pdf": {
+          "url": "https://arxiv.org/pdf/2103.15348",
+          "sha256": "467dd159f063cf01dc30d6f18bb7108534242f608d329d075a10f2507a025112",
+          "size_bytes": 4686220,
+          "page_count": 16
+        }
+      },
+      "expected": {"jats_elements": {}, "approved_differences": []}
+    },
+    {
+      "id": "nasa-aircraft-1967",
+      "title": "Compilation of Papers Summarizing Some Recent NASA Research on Manned Military Aircraft",
+      "year": 1967,
+      "repository": "NASA Technical Reports Server",
+      "landing_url": "https://ntrs.nasa.gov/citations/19670023741",
+      "license": {
+        "identifier": "US-GOV-PUBLIC-DOMAIN",
+        "url": "https://www.usa.gov/government-copyright",
+        "evidence_url": "https://ntrs.nasa.gov/citations/19670023741"
+      },
+      "layout_tags": ["historical", "scanned", "ocr", "long-paper", "figures", "tables"],
+      "files": {
+        "pdf": {
+          "url": "https://ntrs.nasa.gov/api/citations/19670023741/downloads/19670023741.pdf",
+          "sha256": "bb24db6e31716cbb62428c6445eb50a1410756b8df6e32a232981625946ed4c3",
+          "size_bytes": 6420799,
+          "page_count": 156
+        }
+      },
+      "expected": {"jats_elements": {}, "approved_differences": []}
+    },
+    {
+      "id": "warwick-prom-tables-2025",
+      "title": "Systematic reviews of patient-reported outcome measures (PROMs): table templates for effective communication",
+      "year": 2025,
+      "repository": "Warwick Research Archive Portal",
+      "landing_url": "https://wrap.warwick.ac.uk/id/eprint/193745/",
+      "license": {
+        "identifier": "CC-BY-4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "evidence_url": "https://wrap.warwick.ac.uk/id/eprint/193745/"
+      },
+      "layout_tags": ["single-column", "wide-tables", "biomedical", "templates"],
+      "files": {
+        "pdf": {
+          "url": "https://wrap.warwick.ac.uk/id/eprint/193745/1/s11136-025-04058-y.pdf",
+          "sha256": "6c30999206a27a76d0e4931956a04d33195d92002a04737175f27920220ecf46",
+          "size_bytes": 3794382,
+          "page_count": 11
+        }
+      },
+      "expected": {"jats_elements": {}, "approved_differences": []}
+    }
+  ]
+}

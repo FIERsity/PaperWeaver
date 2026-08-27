@@ -129,3 +129,98 @@ class ChineseSummaryRecord(Record):
     model: str
     created_at: str
     supersedes: str | None = None
+
+
+@dataclass(frozen=True)
+class PdfProvenance(Record):
+    page: int
+    bbox: list[float]
+    page_width: float
+    page_height: float
+    media_box: list[float]
+    crop_box: list[float]
+    rotation: int
+    coord_space: Literal["pdf_points"] = "pdf_points"
+    origin: Literal["top_left"] = "top_left"
+
+
+@dataclass(frozen=True)
+class PdfBlock(Record):
+    """A canonical, source-located block derived from an immutable PDF run."""
+
+    schema_version: int
+    block_id: str
+    source_sha256: str
+    run_id: str
+    ordinal: int
+    kind: str
+    status: Literal["ok", "flagged", "unresolved"]
+    disposition: Literal["render", "excluded_artifact", "unresolved_placeholder"]
+    confidence: dict[str, float | None]
+    provenance: list[dict[str, Any]]
+    source_object_refs: list[str]
+    raw_text: str | None
+    text: str | None
+    metadata_role: str | None
+    list: dict[str, Any] | None
+    asset_refs: list[str]
+    table: dict[str, Any] | None
+    equation: dict[str, Any] | None
+    transformations: list[dict[str, Any]]
+    issues: list[str]
+    backend_ref: str
+
+
+@dataclass(frozen=True)
+class PdfObjectAccounting(Record):
+    schema_version: int
+    object_ref: str
+    object_kind: str
+    primary_disposition: Literal["rendered", "excluded_artifact", "unresolved", "duplicate"]
+    primary_block_id: str | None
+    supporting_block_ids: list[str]
+    duplicate_of: str | None
+    reason_code: str | None
+
+
+@dataclass(frozen=True)
+class PdfRelation(Record):
+    schema_version: int
+    relation_id: str
+    type: str
+    from_block_ids: list[str]
+    to_block_ids: list[str]
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PdfArticleMap(Record):
+    schema_version: int
+    render_node_id: str
+    anchor_block_id: str | None
+    markdown_anchor_line: int
+    content_start_line: int
+    content_end_line: int
+    block_ids: list[str]
+
+
+@dataclass(frozen=True)
+class PassageProvenance(Record):
+    schema_version: int
+    passage_id: str
+    block_ids: list[str]
+    sub_locator: dict[str, Any] | None
+    provenance: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class PassageSlot(Record):
+    """Bind one translatable render-tree slot to one Passage."""
+
+    schema_version: int
+    slot_id: str
+    node_id: str
+    passage_id: str
+    role: str
+    block_ids: list[str]
+    sub_locator: dict[str, Any] | None

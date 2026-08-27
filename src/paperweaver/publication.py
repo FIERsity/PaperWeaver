@@ -6,6 +6,7 @@ import html
 import re
 from pathlib import Path
 
+from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -13,7 +14,15 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer
+from reportlab.platypus import (
+    Image,
+    PageBreak,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
 SONGTI_PATH = Path("/System/Library/Fonts/Supplemental/Songti.ttc")
 SONGTI_NAME = "SongtiSC"
@@ -42,13 +51,71 @@ def render_translation_pdf(markdown: Path) -> Path:
         "Formula", parent=body, alignment=TA_CENTER, firstLineIndent=0, fontSize=10,
         leading=16, spaceAfter=6,
     )
+    table_cell = ParagraphStyle(
+        "TableCell", parent=body, fontSize=8.5, leading=11, firstLineIndent=0,
+        alignment=TA_CENTER, spaceAfter=0,
+    )
     document = SimpleDocTemplate(
         str(output), pagesize=A4, leftMargin=25 * mm, rightMargin=25 * mm,
         topMargin=22 * mm, bottomMargin=22 * mm, title="PaperWeaver translated paper",
     )
     story = []
-    for line in markdown.read_text(encoding="utf-8").splitlines():
+    lines = markdown.read_text(encoding="utf-8").splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if line.startswith("|") and line.rstrip().endswith("|"):
+            table_lines = []
+            while index < len(lines) and lines[index].startswith("|"):
+                table_lines.append(lines[index])
+                index += 1
+            rows, header_rows = _pipe_rows(table_lines)
+            if rows:
+                columns = max(len(row) for row in rows)
+                data = [
+                    [Paragraph(_mixed(cell), table_cell) for cell in row]
+                    for row in rows
+                ]
+                table = Table(
+                    data,
+                    colWidths=[155 * mm / columns] * columns,
+                    repeatRows=header_rows,
+                    hAlign="CENTER",
+                )
+                style = [
+                    ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#888888")),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ]
+                if header_rows:
+                    style.extend(
+                        [
+                            ("BACKGROUND", (0, 0), (-1, header_rows - 1), colors.HexColor("#EEEEEE")),
+                            ("LINEBELOW", (0, header_rows - 1), (-1, header_rows - 1), 0.8, colors.black),
+                        ]
+                    )
+                table.setStyle(TableStyle(style))
+                story.extend([table, Spacer(1, 8)])
+            continue
+        if line.strip() == "$$":
+            index += 1
+            formula_lines = []
+            while index < len(lines) and lines[index].strip() != "$$":
+                if lines[index].strip():
+                    formula_lines.append(lines[index].strip())
+                index += 1
+            if index >= len(lines):
+                raise ValueError("Unclosed display equation in translated Markdown")
+            story.append(
+                Paragraph(_mixed(_latex_to_display(" ".join(formula_lines))), formula)
+            )
+            index += 1
+            continue
         if not line.strip():
+            index += 1
             continue
         if line.startswith("# "):
             story.append(Paragraph(_mixed(line[2:]), title))
@@ -67,6 +134,7 @@ def render_translation_pdf(markdown: Path) -> Path:
         else:
             story.append(Paragraph(_mixed(line), body))
             story.append(Spacer(1, 1))
+        index += 1
     document.build(story, onFirstPage=_page_number, onLaterPages=_page_number)
     return output
 
@@ -96,3 +164,37 @@ def _page_number(canvas, document) -> None:
     canvas.setFont("Times-Roman", 9)
     canvas.drawCentredString(A4[0] / 2, 12 * mm, str(document.page))
     canvas.restoreState()
+
+
+def _pipe_rows(lines: list[str]) -> tuple[list[list[str]], int]:
+    rows: list[list[str]] = []
+    header_rows = 0
+    for line in lines:
+        cells = [
+            item.strip().replace(r"\|", "|")
+            for item in re.split(r"(?<!\\)\|", line.strip().strip("|"))
+        ]
+        if cells and all(re.fullmatch(r":?-{3,}:?", item) for item in cells):
+            header_rows = len(rows)
+            continue
+        rows.append(cells)
+    return rows, header_rows
+
+
+def _latex_to_display(value: str) -> str:
+    replacements = {
+        r"\alpha": "α",
+        r"\beta": "β",
+        r"\gamma": "γ",
+        r"\delta": "δ",
+        r"\epsilon": "ε",
+        r"\tau": "τ",
+        r"\cdot": "⋅",
+        r"\times": "×",
+    }
+    for source, target in replacements.items():
+        value = value.replace(source, target)
+    value = re.sub(r"\\tag\{([^{}]+)\}", r"(\1)", value)
+    value = re.sub(r"_\{([^{}]+)\}", r"_\1", value)
+    value = re.sub(r"\^\{([^{}]+)\}", r"^\1", value)
+    return value

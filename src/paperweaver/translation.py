@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import xml.etree.ElementTree as ET
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
@@ -15,11 +17,15 @@ from .models import (
     Entity,
     GlossaryEntry,
     Passage,
+    PassageProvenance,
+    PassageSlot,
+    PdfBlock,
     TranslationContext,
     TranslationRecord,
     TranslationUnit,
 )
-from .storage import append_jsonl, read_jsonl, write_jsonl
+from .pdf_markdown import materialize_markdown
+from .storage import append_jsonl, atomic_write_text, read_jsonl, write_jsonl
 
 STATE = "state"
 
@@ -44,22 +50,32 @@ def segment_paper(root: Path, unit_size: int = 2) -> tuple[list[Passage], list[T
         raise ValueError("unit_size must be at least 1")
     source = _source_markdown(root)
     digest = _source_digest(root)
-    passages: list[Passage] = []
-    section = "Preamble"
-    ordinal = 0
-    for line_number, block in _paragraph_blocks(source):
-        if block.startswith("#"):
-            section = block.lstrip("#").strip()
-            continue
-        if block.startswith("[") and block.split("]", 1)[0] in {"[Figure", "[Table", "[Equation"}:
-            kind = "structural"
-        else:
-            kind = "paragraph"
-        ordinal += 1
-        passages.append(Passage(
-            _stable_id("psg", digest, section, ordinal, _normalise(block)), section, ordinal, block,
-            f"source/article.md:{line_number}", kind,
-        ))
+    pdf_mapping = _pdf_mapping(root)
+    passage_slots: list[PassageSlot] = []
+    if pdf_mapping is not None:
+        passages, passage_provenance, passage_slots = _pdf_passages(digest, pdf_mapping)
+    else:
+        passages = []
+        passage_provenance = []
+        section = "Preamble"
+        ordinal = 0
+        for line_number, block in _paragraph_blocks(source):
+            if block.startswith("#"):
+                section = block.lstrip("#").strip()
+                continue
+            # JATS visual markers remain translatable caption Passages; equations are literal.
+            kind = "structural" if block.startswith("[Equation") else "paragraph"
+            ordinal += 1
+            passages.append(
+                Passage(
+                    _stable_id("psg", digest, section, ordinal, _normalise(block)),
+                    section,
+                    ordinal,
+                    block,
+                    f"source/article.md:{line_number}",
+                    kind,
+                )
+            )
     units: list[TranslationUnit] = []
     for section_title in dict.fromkeys(item.section_title for item in passages):
         scoped = [item for item in passages if item.section_title == section_title]
@@ -71,6 +87,9 @@ def segment_paper(root: Path, unit_size: int = 2) -> tuple[list[Passage], list[T
             ))
     write_jsonl(root / STATE / "passages.jsonl", passages)
     write_jsonl(root / STATE / "units.jsonl", units)
+    if pdf_mapping is not None:
+        write_jsonl(root / STATE / "passage-provenance.jsonl", passage_provenance)
+        write_jsonl(root / STATE / "passage-slots.jsonl", passage_slots)
     for name in ("glossary.jsonl", "entities.jsonl", "translations.jsonl"):
         path = root / STATE / name
         if not path.exists():
@@ -142,24 +161,37 @@ def import_translation_draft(root: Path, draft: Path, adapter: str, model: str, 
     records = read_jsonl(root / STATE / "translations.jsonl", TranslationRecord)
     active = active_translations(records)
     unit_by_passage = {item_id: unit.id for unit in read_jsonl(root / STATE / "units.jsonl", TranslationUnit) for item_id in unit.passage_ids}
-    written = 0
+    pending: list[tuple[str, str]] = []
+    seen: set[str] = set()
     for number, line in enumerate(draft.read_text(encoding="utf-8").splitlines(), 1):
-        raw = json.loads(line)
+        try:
+            raw = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"{draft}:{number}: invalid JSON: {error.msg}") from error
         if set(raw) != {"passage_id", "translated_text"}:
             raise ValueError(f"{draft}:{number}: expected passage_id and translated_text")
         passage_id, text = raw["passage_id"], raw["translated_text"]
         if passage_id not in passages or not isinstance(text, str) or not text.strip():
             raise ValueError(f"{draft}:{number}: invalid passage or translation")
+        if passage_id in seen:
+            raise ValueError(f"{draft}:{number}: duplicate passage in one draft: {passage_id}")
+        seen.add(passage_id)
+        pending.append((passage_id, text))
+
+    additions: list[TranslationRecord] = []
+    source_digest = _source_digest(root)
+    for passage_id, text in pending:
         previous = active.get(passage_id)
         record = TranslationRecord(
             _stable_id("tr", passage_id, previous.id if previous else "", text, reason), unit_by_passage[passage_id],
-            passage_id, text, adapter, model, _now(), _source_digest(root),
+            passage_id, text, adapter, model, _now(), source_digest,
             previous.revision + 1 if previous else 1, previous.id if previous else None, reason,
         )
-        append_jsonl(root / STATE / "translations.jsonl", record)
+        additions.append(record)
         active[passage_id] = record
-        written += 1
-    return written
+    if additions:
+        write_jsonl(root / STATE / "translations.jsonl", records + additions)
+    return len(additions)
 
 
 def import_glossary(root: Path, draft: Path) -> int:
@@ -203,7 +235,32 @@ def import_entities(root: Path, draft: Path) -> int:
 
 
 def active_translations(records: list[TranslationRecord]) -> dict[str, TranslationRecord]:
-    return {record.passage_id: record for record in records}
+    seen_ids: set[str] = set()
+    active: dict[str, TranslationRecord] = {}
+    for record in records:
+        if record.id in seen_ids:
+            raise ValueError(f"TRANSLATION_LEDGER_INVALID: duplicate record id {record.id}")
+        seen_ids.add(record.id)
+        previous = active.get(record.passage_id)
+        expected_revision = previous.revision + 1 if previous else 1
+        expected_supersedes = previous.id if previous else None
+        expected_id = _stable_id(
+            "tr",
+            record.passage_id,
+            expected_supersedes or "",
+            record.translated_text,
+            record.reason,
+        )
+        if (
+            record.revision != expected_revision
+            or record.supersedes != expected_supersedes
+            or record.id != expected_id
+        ):
+            raise ValueError(
+                f"TRANSLATION_LEDGER_INVALID: broken revision chain for {record.passage_id}"
+            )
+        active[record.passage_id] = record
+    return active
 
 
 def validate_translations(root: Path) -> list[str]:
@@ -211,6 +268,32 @@ def validate_translations(root: Path) -> list[str]:
     active = active_translations(read_jsonl(root / STATE / "translations.jsonl", TranslationRecord))
     errors = [f"Missing translation: {item.id}" for item in passages if item.kind == "paragraph" and item.id not in active]
     errors.extend(f"Empty translation: {item.id}" for item in passages if item.id in active and not active[item.id].translated_text.strip())
+    digest = _source_digest(root)
+    errors.extend(
+        f"Stale translation source: {item.passage_id}"
+        for item in active.values()
+        if item.source_sha256 != digest
+    )
+    if _source_format(root) == "pdf":
+        slots = read_jsonl(root / STATE / "passage-slots.jsonl", PassageSlot)
+        passage_ids = {item.id for item in passages if item.kind == "paragraph"}
+        mapped_passages = [item.passage_id for item in slots]
+        mapped_slots = [item.slot_id for item in slots]
+        tree = json.loads(
+            (root / "source" / "pdf" / "render-tree.json").read_text(encoding="utf-8")
+        )
+        expected_slots = {
+            slot["slot_id"]
+            for node in tree["nodes"]
+            for slot in node["slots"]
+            if slot["mode"] == "translate" and slot["source_text"].strip()
+        }
+        if len(mapped_passages) != len(set(mapped_passages)):
+            errors.append("Duplicate PDF Passage slot mapping")
+        if set(mapped_passages) != passage_ids:
+            errors.append("PDF Passage slots do not cover translatable Passages")
+        if len(mapped_slots) != len(set(mapped_slots)) or set(mapped_slots) != expected_slots:
+            errors.append("PDF render-tree slots do not match Passage slots")
     return errors
 
 
@@ -219,6 +302,8 @@ def export_translated_markdown(root: Path) -> Path:
     errors = validate_translations(root)
     if errors:
         raise RuntimeError("Cannot export incomplete translations: " + "; ".join(errors[:3]))
+    if _source_format(root) == "pdf":
+        return _export_pdf_translated_markdown(root)
     active = active_translations(read_jsonl(root / STATE / "translations.jsonl", TranslationRecord))
     paper = json.loads((root / "paper.json").read_text(encoding="utf-8"))
     lines = [f"# {paper['title']}", ""]
@@ -239,6 +324,64 @@ def export_translated_markdown(root: Path) -> Path:
     lines.extend(_jats_references(root))
     output = root / "output" / "translated.md"
     output.write_text("\n".join(lines), encoding="utf-8")
+    return output
+
+
+def _export_pdf_translated_markdown(root: Path) -> Path:
+    from .pdf_contracts import validate_pdf_project
+
+    validate_pdf_project(root, require_complete=True)
+    manifest = json.loads(
+        (root / "source" / "pdf" / "manifest.json").read_text(encoding="utf-8")
+    )
+    run_root = root / "source" / "pdf" / "runs" / manifest["active_run_id"]
+    blocks = [
+        PdfBlock(**json.loads(line))
+        for line in (run_root / "base-blocks.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    active = active_translations(
+        read_jsonl(root / STATE / "translations.jsonl", TranslationRecord)
+    )
+    slots = read_jsonl(root / STATE / "passage-slots.jsonl", PassageSlot)
+    slot_values = {
+        item.slot_id: active[item.passage_id].translated_text for item in slots
+    }
+    paper = json.loads((root / "paper.json").read_text(encoding="utf-8"))
+    effective = []
+    for block in blocks:
+        if block.kind == "document_title":
+            block = replace(block, text=paper["title"])
+        elif block.kind == "section_heading":
+            block = replace(
+                block,
+                text=_localized_section_title(block.text or "", paper["target_language"]),
+            )
+        effective.append(block)
+    asset_paths: dict[str, str] = {}
+    assets = root / "source" / "assets" / "manifest.jsonl"
+    for line in assets.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        item = json.loads(line)
+        source = root / item["path"]
+        destination = root / "output" / "assets" / source.name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+        asset_paths[item["asset_id"]] = f"assets/{destination.name}"
+    markdown, _, _ = materialize_markdown(
+        effective,
+        manifest["materialization_id"],
+        asset_paths,
+        slot_values,
+    )
+    visible = [
+        line
+        for line in markdown.splitlines()
+        if not line.startswith("<!-- paperweaver:")
+    ]
+    output = root / "output" / "translated.md"
+    atomic_write_text(output, "\n".join(visible).strip() + "\n")
     return output
 
 
@@ -351,11 +494,22 @@ def _source_digest(root: Path) -> str:
     return json.loads((root / "source" / "source.json").read_text(encoding="utf-8"))["sha256"]
 
 
+def _source_format(root: Path) -> str:
+    return json.loads(
+        (root / "source" / "source.json").read_text(encoding="utf-8")
+    )["format"]
+
+
 def _paragraph_blocks(text: str):
     start = 1
     buffered: list[str] = []
     for line_number, line in enumerate(text.splitlines(), 1):
-        if line.startswith("#"):
+        if line.startswith("<!-- paperweaver:"):
+            if buffered:
+                yield start, "\n".join(buffered).strip()
+                buffered = []
+            start = line_number + 1
+        elif line.startswith("#"):
             if buffered:
                 yield start, "\n".join(buffered).strip()
                 buffered = []
@@ -424,3 +578,105 @@ def _stable_id(prefix: str, *parts: object) -> str:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _pdf_mapping(root: Path) -> dict[str, object] | None:
+    source_record = root / "source" / "source.json"
+    if not source_record.exists():
+        return None
+    source = json.loads(source_record.read_text(encoding="utf-8"))
+    if source.get("format") != "pdf":
+        return None
+    from .pdf_contracts import validate_pdf_project
+
+    validate_pdf_project(root, require_complete=True)
+    manifest_path = root / "source" / "pdf" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    maps = [
+        json.loads(line)
+        for line in (root / "source" / "article-map.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    run_id = manifest["active_run_id"]
+    blocks = [
+        json.loads(line)
+        for line in (root / "source" / "pdf" / "runs" / run_id / "base-blocks.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ]
+    tree = json.loads(
+        (root / "source" / "pdf" / "render-tree.json").read_text(encoding="utf-8")
+    )
+    return {
+        "by_line": {item["content_start_line"]: item for item in maps},
+        "blocks": {item["block_id"]: item for item in blocks},
+        "tree": tree,
+    }
+
+
+def _pdf_passages(
+    digest: str, pdf_mapping: dict[str, object]
+) -> tuple[list[Passage], list[PassageProvenance], list[PassageSlot]]:
+    blocks = pdf_mapping["blocks"]
+    tree = pdf_mapping["tree"]
+    passages: list[Passage] = []
+    provenance_rows: list[PassageProvenance] = []
+    slot_rows: list[PassageSlot] = []
+    section = "Preamble"
+    ordinal = 0
+    for node in tree["nodes"]:  # type: ignore[index]
+        block_ids = node["block_ids"]
+        block = blocks[block_ids[0]]  # type: ignore[index]
+        if block["kind"] in {"document_title", "section_heading"}:
+            section = block["text"] or section
+            continue
+        for slot in node["slots"]:
+            text = slot["source_text"]
+            if slot["mode"] != "translate" or not text.strip():
+                continue
+            ordinal += 1
+            sub_locator = slot["sub_locator"]
+            first = block["provenance"][0]
+            suffix = ""
+            if sub_locator is not None:
+                suffix = f"; table:r{sub_locator['row'] + 1}c{sub_locator['column'] + 1}"
+            locator = f"pdf:p{first['page']}{first['bbox']}{suffix}"
+            passage = Passage(
+                _stable_id("psg", digest, section, ordinal, _normalise(text)),
+                section,
+                ordinal,
+                text,
+                locator,
+                "paragraph",
+            )
+            passages.append(passage)
+            provenance_rows.append(
+                PassageProvenance(
+                    1, passage.id, block_ids, sub_locator, block["provenance"]
+                )
+            )
+            slot_rows.append(
+                PassageSlot(
+                    1,
+                    slot["slot_id"],
+                    node["node_id"],
+                    passage.id,
+                    slot["role"],
+                    block_ids,
+                    sub_locator,
+                )
+            )
+    return passages, provenance_rows, slot_rows
+
+
+def _source_locator(line_number: int, pdf_mapping: dict[str, object] | None) -> str:
+    locator = f"source/article.md:{line_number}"
+    if pdf_mapping is None:
+        return locator
+    mapping = pdf_mapping["by_line"].get(line_number)  # type: ignore[index,union-attr]
+    if mapping is None:
+        return locator
+    blocks = pdf_mapping["blocks"]  # type: ignore[assignment]
+    first = blocks[mapping["block_ids"][0]]["provenance"][0]  # type: ignore[index]
+    return f"{locator}; pdf:p{first['page']}{first['bbox']}"

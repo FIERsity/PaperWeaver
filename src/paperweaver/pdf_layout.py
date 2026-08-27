@@ -1,0 +1,1161 @@
+"""Deterministic, conservative layout recovery for born-digital journal PDFs."""
+
+from __future__ import annotations
+
+import math
+import re
+from collections import defaultdict
+from dataclasses import dataclass, replace
+from itertools import pairwise
+from statistics import median
+from typing import Any
+
+from . import pdf_equation, pdf_table, pdf_visual
+from .models import PdfBlock, PdfObjectAccounting
+from .pdf_backend import PdfBackendRun, PdfPageObservation, RawPdfObject
+from .pdf_contracts import make_block_id
+
+KNOWN_HEADINGS = {
+    "abstract",
+    "introduction",
+    "background",
+    "methods",
+    "methodology",
+    "data",
+    "results",
+    "discussion",
+    "conclusion",
+    "conclusions",
+    "references",
+    "acknowledgements",
+    "acknowledgments",
+    "dataavailability",
+    "declarationofcompetinginterest",
+    "creditauthorshipcontributionstatement",
+}
+
+
+@dataclass(frozen=True)
+class LayoutLine:
+    page: int
+    bbox: list[float]
+    text: str
+    raw_text: str
+    object_refs: list[str]
+    font_size: float
+    fontname: str
+    column: str = "full"
+
+
+@dataclass(frozen=True)
+class LayoutResult:
+    blocks: list[PdfBlock]
+    accounting: list[PdfObjectAccounting]
+    metrics: dict[str, Any]
+
+
+def recover_layout(
+    run: PdfBackendRun,
+    source_sha256: str,
+    run_id: str,
+    policy: dict[str, Any],
+) -> LayoutResult:
+    page_lines = {
+        page.page: _lines_from_chars(page, policy) for page in run.pages
+    }
+    document_tokens = _document_tokens(page_lines)
+    artifact_keys = _repeated_artifacts(run.pages, page_lines, policy)
+    blocks: list[PdfBlock] = []
+    accounting_by_ref: dict[str, PdfObjectAccounting] = {}
+    valid_characters = invalid_characters = rotated_characters = 0
+    native_text_by_page: dict[int, dict[str, int]] = {}
+    page_column_counts: dict[int, int] = {}
+
+    for page in run.pages:
+        equations = pdf_equation.detect_equations(page.objects, page.width)
+        native_text_by_page[page.page] = {"valid": 0, "invalid": 0}
+        visual_clusters = pdf_visual.cluster_visual_objects(
+            page.objects, page.width, page.height
+        )
+        content_clusters = [
+            cluster
+            for cluster in visual_clusters
+            if not pdf_visual.decorative_cluster(
+                cluster, float(policy["rule_thickness_pt"])
+            )
+        ]
+        # ---- Pass 1: detect verified tables so their characters leave the text layer ----
+        consumed = _verified_table_chars(
+            page, page_lines[page.page], document_tokens, artifact_keys, policy
+        )
+        figure_chars, reserved_figure_refs = _verified_figure_chars(
+            page,
+            page_lines[page.page],
+            document_tokens,
+            artifact_keys,
+            content_clusters,
+            policy,
+        )
+        consumed.update(figure_chars)
+        consumed.update(
+            object_ref for equation in equations for object_ref in equation.object_refs
+        )
+        lines = _lines_from_chars(page, policy, exclude=consumed)
+        artifact_lines = [line for line in lines if _artifact_key(page, line, policy) in artifact_keys]
+        content_lines = [line for line in lines if line not in artifact_lines]
+        ordered, columns = _reading_order(page, content_lines, policy)
+        page_column_counts[page.page] = columns
+
+        for line in artifact_lines:
+            kind = "page_number" if _looks_like_page_number(line.text) else (
+                "header" if line.bbox[1] < page.height / 2 else "footer"
+            )
+            block = _make_block(
+                source_sha256,
+                run_id,
+                len(blocks) + 1,
+                kind,
+                "ok",
+                "excluded_artifact",
+                [line],
+                page,
+                issues=[],
+            )
+            blocks.append(block)
+            for object_ref in line.object_refs:
+                accounting_by_ref[object_ref] = PdfObjectAccounting(
+                    1,
+                    object_ref,
+                    "char",
+                    "excluded_artifact",
+                    None,
+                    [],
+                    None,
+                    f"PDF_{kind.upper()}",
+                )
+
+        paragraphs = _paragraphs(ordered)
+        title_index = (
+            _document_title_index(page, paragraphs, document_tokens)
+            if page.page == 1
+            else None
+        )
+        page_para_start = len(blocks)
+        for paragraph_index, paragraph in enumerate(paragraphs):
+            text, ambiguous_hyphen = _join_paragraph_lines(paragraph, document_tokens)
+            kind, status, issues = _classify_block(
+                text, paragraph_index == title_index, paragraph, ambiguous_hyphen
+            )
+            disposition = "render" if status != "unresolved" else "unresolved_placeholder"
+            block = _make_block(
+                source_sha256,
+                run_id,
+                len(blocks) + 1,
+                kind,
+                status,
+                disposition,
+                paragraph,
+                page,
+                issues=issues,
+                text=text,
+            )
+            blocks.append(block)
+            primary = "unresolved" if status == "unresolved" else "rendered"
+            for line in paragraph:
+                for object_ref in line.object_refs:
+                    accounting_by_ref[object_ref] = PdfObjectAccounting(
+                        1, object_ref, "char", primary, block.block_id, [], None, None
+                    )
+
+        # ---- Pass 2: turn captions into table/figure blocks ----
+        elements, updated, claims, placements = _build_elements(
+            blocks[page_para_start:],
+            page,
+            page.objects,
+            source_sha256,
+            run_id,
+            policy,
+            len(blocks) + 1,
+            content_clusters,
+            reserved_figure_refs,
+        )
+        page_blocks: list[PdfBlock] = []
+        for candidate in blocks[page_para_start:]:
+            effective = updated.get(candidate.ordinal, candidate)
+            placement = placements.get(candidate.ordinal)
+            if placement is not None and placement[0] == "before":
+                page_blocks.append(placement[1])
+            page_blocks.append(effective)
+            if placement is not None and placement[0] == "after":
+                page_blocks.append(placement[1])
+        placed_ids = {item[1].block_id for item in placements.values()}
+        page_blocks.extend(item for item in elements if item.block_id not in placed_ids)
+        for candidate in equations:
+            verified = candidate.verified and not _equation_visual_overlap(
+                candidate, page.objects, policy
+            )
+            line = _element_line(
+                page,
+                list(candidate.bbox),
+                candidate.raw_text,
+                list(candidate.object_refs),
+            )
+            equation_block = replace(
+                _make_block(
+                    source_sha256,
+                    run_id,
+                    len(blocks) + len(page_blocks) + 1,
+                    "equation",
+                    "ok" if verified else "unresolved",
+                    "render" if verified else "unresolved_placeholder",
+                    [line],
+                    page,
+                    issues=[] if verified else ["PDF_EQUATION_UNRESOLVED"],
+                    text=candidate.raw_text,
+                ),
+                equation={
+                    "latex": candidate.latex if verified else None,
+                    "number": candidate.number,
+                    "latex_verified": verified,
+                },
+            )
+            position = next(
+                (
+                    index
+                    for index, block in enumerate(page_blocks)
+                    if block.provenance[0]["bbox"][1] > candidate.bbox[1]
+                ),
+                len(page_blocks),
+            )
+            page_blocks.insert(position, equation_block)
+            for object_ref in candidate.object_refs:
+                claims[object_ref] = (
+                    "rendered" if verified else "unresolved",
+                    equation_block.block_id,
+                    None if verified else "PDF_EQUATION_UNRESOLVED",
+                )
+        blocks[page_para_start:] = page_blocks
+        for object_ref, (disposition, block_id, reason) in claims.items():
+            kind_of = next(
+                (item.kind for item in page.objects if item.object_ref == object_ref), "char"
+            )
+            accounting_by_ref[object_ref] = PdfObjectAccounting(
+                1, object_ref, kind_of, disposition, block_id, [], None, reason
+            )
+
+        for cluster in visual_clusters:
+            remaining = [
+                item for item in cluster.objects if item.object_ref not in claims
+            ]
+            if not remaining:
+                continue
+            remaining_cluster = pdf_visual.VisualCluster(
+                tuple(remaining), tuple(_union_bbox([item.bbox for item in remaining]))
+            )
+            if pdf_visual.decorative_cluster(
+                remaining_cluster, float(policy["rule_thickness_pt"])
+            ):
+                for item in remaining:
+                    accounting_by_ref[item.object_ref] = PdfObjectAccounting(
+                        1,
+                        item.object_ref,
+                        item.kind,
+                        "excluded_artifact",
+                        None,
+                        [],
+                        None,
+                        "PDF_DECORATIVE_RULE",
+                    )
+                continue
+            visual_line = LayoutLine(
+                page.page,
+                list(remaining_cluster.bbox),
+                f"Unresolved visual content on page {page.page}",
+                f"Unresolved visual content on page {page.page}",
+                [item.object_ref for item in remaining],
+                0.0,
+                "",
+            )
+            visual_block = _make_block(
+                source_sha256,
+                run_id,
+                len(blocks) + 1,
+                "unknown",
+                "unresolved",
+                "unresolved_placeholder",
+                [visual_line],
+                page,
+                issues=["PDF_VISIBLE_REGION_UNRESOLVED"],
+                text=f"Unresolved visual content on page {page.page}",
+            )
+            blocks.append(visual_block)
+            for item in remaining:
+                accounting_by_ref[item.object_ref] = PdfObjectAccounting(
+                    1,
+                    item.object_ref,
+                    item.kind,
+                    "unresolved",
+                    visual_block.block_id,
+                    [],
+                    None,
+                    None,
+                )
+        for item in (item for item in page.objects if item.kind == "annotation"):
+            accounting_by_ref[item.object_ref] = PdfObjectAccounting(
+                1,
+                item.object_ref,
+                item.kind,
+                "excluded_artifact",
+                None,
+                [],
+                None,
+                "PDF_DECORATIVE_RULE",
+            )
+
+        for item in page.objects:
+            if item.kind != "char":
+                continue
+            value = item.payload
+            if value.isspace():
+                if item.object_ref not in accounting_by_ref:
+                    accounting_by_ref[item.object_ref] = PdfObjectAccounting(
+                        1,
+                        item.object_ref,
+                        "char",
+                        "excluded_artifact",
+                        None,
+                        [],
+                        None,
+                        "PDF_WHITESPACE",
+                    )
+                continue
+            if _valid_unicode(value):
+                valid_characters += 1
+                native_text_by_page[page.page]["valid"] += 1
+            else:
+                invalid_characters += 1
+                native_text_by_page[page.page]["invalid"] += 1
+            if page.rotation in {90, 270} or not item.attrs.get("upright", True):
+                rotated_characters += 1
+
+    blocks = [replace(block, ordinal=index) for index, block in enumerate(blocks, 1)]
+    blocks = _mark_reference_blocks(blocks)
+    blocks, cross_page_blocks = _mark_cross_page_ambiguities(blocks)
+    if cross_page_blocks:
+        accounting_by_ref = {
+            object_ref: replace(item, primary_disposition="unresolved")
+            if item.primary_block_id in cross_page_blocks
+            else item
+            for object_ref, item in accounting_by_ref.items()
+        }
+    missing = [
+        item.object_ref
+        for page in run.pages
+        for item in page.objects
+        if item.object_ref not in accounting_by_ref
+    ]
+    if missing:
+        raise RuntimeError(
+            f"PDF_OBJECT_ACCOUNTING_INCOMPLETE: {len(missing)} objects have no disposition"
+        )
+
+    total_characters = valid_characters + invalid_characters
+    usable_pages = sum(
+        1
+        for page in run.pages
+        if sum(1 for item in page.objects if item.kind == "char" and _valid_unicode(item.payload))
+        >= 100
+    )
+    metrics = {
+        "pages": len(run.pages),
+        "leaf_objects": sum(len(page.objects) for page in run.pages),
+        "valid_unicode_ratio": valid_characters / total_characters if total_characters else 0.0,
+        "replacement_character_ratio": (
+            invalid_characters / total_characters if total_characters else 1.0
+        ),
+        "unresolved_glyphs": invalid_characters,
+        "rotated_body_character_ratio": (
+            rotated_characters / total_characters if total_characters else 0.0
+        ),
+        "rotated_pages": [page.page for page in run.pages if page.rotation != 0],
+        "content_pages_with_usable_text_ratio": usable_pages / len(run.pages),
+        "one_or_two_column_page_ratio": (
+            sum(count in {1, 2} for count in page_column_counts.values()) / len(run.pages)
+        ),
+        "source_object_accounting_ratio": 1.0,
+        "columns_by_page": page_column_counts,
+        "ambiguous_layout_pages": [
+            page for page, count in page_column_counts.items() if count not in {1, 2}
+        ],
+        "native_text_by_page": native_text_by_page,
+    }
+    return LayoutResult(blocks, list(accounting_by_ref.values()), metrics)
+
+
+def _lines_from_chars(
+    page: PdfPageObservation, policy: dict[str, Any], exclude: set[str] | None = None
+) -> list[LayoutLine]:
+    exclude = exclude or set()
+    chars = [
+        item
+        for item in page.objects
+        if item.kind == "char" and item.payload and item.object_ref not in exclude
+    ]
+    chars.sort(key=lambda item: (item.bbox[1], item.bbox[0]))
+    baselines: list[list[RawPdfObject]] = []
+    tolerance = float(policy["line_y_tolerance_points"])
+    for char in chars:
+        target = next(
+            (
+                row
+                for row in reversed(baselines[-4:])
+                if abs(median(item.bbox[1] for item in row) - char.bbox[1]) <= tolerance
+            ),
+            None,
+        )
+        if target is None:
+            baselines.append([char])
+        else:
+            target.append(char)
+
+    lines: list[LayoutLine] = []
+    split_gap = float(policy["line_split_gap_points"])
+    for baseline in baselines:
+        ordered = sorted(baseline, key=lambda item: item.bbox[0])
+        segments: list[list[RawPdfObject]] = [[]]
+        previous: RawPdfObject | None = None
+        for char in ordered:
+            if previous is not None and char.bbox[0] - previous.bbox[2] > split_gap:
+                segments.append([])
+            segments[-1].append(char)
+            previous = char
+        for segment in segments:
+            text = _join_chars(segment).strip()
+            raw_text = "".join(item.payload for item in segment).strip()
+            if not text:
+                continue
+            sizes = [float(item.attrs.get("size", 0.0)) for item in segment]
+            fonts = [str(item.attrs.get("fontname", "")) for item in segment]
+            lines.append(
+                LayoutLine(
+                    page.page,
+                    _union_bbox([item.bbox for item in segment]),
+                    text,
+                    raw_text,
+                    [item.object_ref for item in segment],
+                    median(sizes) if sizes else 0.0,
+                    max(set(fonts), key=fonts.count) if fonts else "",
+                )
+            )
+    return sorted(lines, key=lambda line: (line.bbox[1], line.bbox[0]))
+
+
+def _join_chars(chars: list[RawPdfObject]) -> str:
+    output = ""
+    previous: RawPdfObject | None = None
+    for char in chars:
+        value = char.payload
+        if previous is not None and value != " " and not output.endswith(" "):
+            gap = char.bbox[0] - previous.bbox[2]
+            size = max(float(previous.attrs.get("size", 0.0)), 1.0)
+            if gap > max(0.8, size * 0.18):
+                output += " "
+        output += value
+        previous = char
+    return re.sub(r"\s+([,.;:!?%)\]])", r"\1", re.sub(r"\s+", " ", output))
+
+
+def _repeated_artifacts(
+    pages: list[PdfPageObservation],
+    lines_by_page: dict[int, list[LayoutLine]],
+    policy: dict[str, Any],
+) -> set[str]:
+    seen: dict[str, set[int]] = defaultdict(set)
+    for page in pages:
+        for line in lines_by_page[page.page]:
+            key = _artifact_key(page, line, policy)
+            if key:
+                seen[key].add(page.page)
+    required = max(
+        int(policy["min_repeated_artifact_pages"]),
+        math.ceil(len(pages) * float(policy["repeated_artifact_page_ratio"])),
+    )
+    repeated = {key for key, page_numbers in seen.items() if len(page_numbers) >= required}
+    for page in pages:
+        for line in lines_by_page[page.page]:
+            if (
+                line.bbox[1] > page.height * (1 - policy["header_footer_zone_ratio"])
+                and _looks_like_page_number(line.text)
+            ):
+                repeated.add(_artifact_key(page, line, policy))
+    return repeated
+
+
+def _artifact_key(
+    page: PdfPageObservation, line: LayoutLine, policy: dict[str, Any]
+) -> str:
+    zone = float(policy["header_footer_zone_ratio"])
+    if line.bbox[1] > page.height * zone and line.bbox[3] < page.height * (1 - zone):
+        return ""
+    normalised = re.sub(r"\d+", "#", re.sub(r"\s+", "", line.text.casefold()))
+    return normalised if normalised else ""
+
+
+def _reading_order(
+    page: PdfPageObservation,
+    lines: list[LayoutLine],
+    policy: dict[str, Any],
+) -> tuple[list[LayoutLine], int]:
+    by_top: list[list[LayoutLine]] = []
+    tolerance = float(policy["line_y_tolerance_points"])
+    for line in sorted(lines, key=lambda item: (item.bbox[1], item.bbox[0])):
+        target = next(
+            (
+                row
+                for row in reversed(by_top[-3:])
+                if abs(median(item.bbox[1] for item in row) - line.bbox[1]) <= tolerance
+            ),
+            None,
+        )
+        if target is None:
+            by_top.append([line])
+        else:
+            target.append(line)
+    pairs: list[tuple[float, float, list[LayoutLine]]] = []
+    min_gap = max(float(policy["line_split_gap_points"]), page.width * policy["column_gap_ratio"])
+    multi_column_rows = 0
+    for row in by_top:
+        row = sorted(row, key=lambda item: item.bbox[0])
+        if len(row) >= 3 and all(
+            right.bbox[0] - left.bbox[2] >= min_gap
+            for left, right in pairwise(row)
+        ):
+            multi_column_rows += 1
+        if len(row) != 2:
+            continue
+        gap = row[1].bbox[0] - row[0].bbox[2]
+        if gap >= min_gap:
+            pairs.append(((row[0].bbox[2] + row[1].bbox[0]) / 2, row[0].bbox[1], row))
+    if multi_column_rows >= int(policy["column_min_shared_lines"]):
+        if any(re.match(r"^table\s+\d+\b", line.text, re.IGNORECASE) for line in lines):
+            # Dense aligned segments belong to an unresolved table region, not body columns.
+            return sorted(lines, key=lambda item: (item.bbox[1], item.bbox[0])), 1
+        return sorted(lines, key=lambda item: (item.bbox[1], item.bbox[0])), 3
+    if len(pairs) < int(policy["column_min_shared_lines"]):
+        return sorted(lines, key=lambda item: (item.bbox[1], item.bbox[0])), 1
+
+    cut = median(item[0] for item in pairs)
+    band_top = min(item[1] for item in pairs) - tolerance
+    band_bottom = max(max(line.bbox[3] for line in item[2]) for item in pairs) + tolerance
+    before = [line for line in lines if line.bbox[3] < band_top]
+    after = [line for line in lines if line.bbox[1] > band_bottom]
+    band = [line for line in lines if line not in before and line not in after]
+    left = [line for line in band if line.bbox[2] <= cut]
+    right = [line for line in band if line.bbox[0] >= cut]
+    spanning = [line for line in band if line not in left and line not in right]
+    if not left or not right:
+        return sorted(lines, key=lambda item: (item.bbox[1], item.bbox[0])), 1
+    if spanning:
+        # P1a does not guess how spanning text interleaves with two independent columns.
+        return sorted(lines, key=lambda item: (item.bbox[1], item.bbox[0])), 3
+    ordered_band = [
+        replace(item, column="left") for item in sorted(left, key=lambda item: item.bbox[1])
+    ]
+    ordered_band.extend(
+        replace(item, column="right")
+        for item in sorted(right, key=lambda item: item.bbox[1])
+    )
+    ordered_band.extend(sorted(spanning, key=lambda item: (item.bbox[1], item.bbox[0])))
+    return (
+        sorted(before, key=lambda item: (item.bbox[1], item.bbox[0]))
+        + ordered_band
+        + sorted(after, key=lambda item: (item.bbox[1], item.bbox[0])),
+        2,
+    )
+
+
+def _paragraphs(lines: list[LayoutLine]) -> list[list[LayoutLine]]:
+    if not lines:
+        return []
+    body_sizes = [line.font_size for line in lines if line.font_size > 0]
+    body_size = median(body_sizes) if body_sizes else 8.0
+    paragraphs: list[list[LayoutLine]] = []
+    current: list[LayoutLine] = []
+    base_x_by_column: dict[str, float] = {}
+    for column in {line.column for line in lines}:
+        xs = [line.bbox[0] for line in lines if line.column == column]
+        if xs:
+            base_x_by_column[column] = min(xs)
+    for line in lines:
+        previous = current[-1] if current else None
+        heading = _heading_candidate_line(line)
+        previous_heading = previous is not None and _heading_candidate_line(previous)
+        gap = line.bbox[1] - previous.bbox[3] if previous else 0.0
+        indented = line.bbox[0] > base_x_by_column.get(line.column, line.bbox[0]) + body_size
+        new = (
+            previous is None
+            or line.page != previous.page
+            or line.column != previous.column
+            or heading
+            or previous_heading
+            or gap > max(5.0, body_size * 0.9)
+            or abs(line.font_size - previous.font_size) > max(0.8, body_size * 0.12)
+            or (indented and previous.text.rstrip().endswith((".", "?", "!", ":")))
+        )
+        if new and current:
+            paragraphs.append(current)
+            current = []
+        current.append(line)
+    if current:
+        paragraphs.append(current)
+    return paragraphs
+
+
+def _document_title_index(
+    page: PdfPageObservation,
+    paragraphs: list[list[LayoutLine]],
+    document_tokens: set[str],
+) -> int | None:
+    candidates = []
+    excluded = ("journal of ", "contents lists", "journal homepage", "science direct")
+    for index, paragraph in enumerate(paragraphs):
+        text = _join_paragraph_lines(paragraph, document_tokens)[0].casefold()
+        top = paragraph[0].bbox[1] / page.height
+        caption = re.match(r"^(figure|table)\s+\d+", text)
+        if (
+            0.04 <= top <= 0.42
+            and caption is None
+            and not any(value in text for value in excluded)
+        ):
+            candidates.append((max(line.font_size for line in paragraph), len(text), index))
+    return max(candidates)[2] if candidates else None
+
+
+def _classify_block(
+    text: str, is_title: bool, lines: list[LayoutLine], ambiguous_hyphen: bool = False
+) -> tuple[str, str, list[str]]:
+    if is_title:
+        return "document_title", "ok", []
+    compact = re.sub(r"\s+", "", text).casefold()
+    if _is_heading_line(lines[0]) or compact in {"abstract", "references"}:
+        return "section_heading", "ok", []
+    if re.search(r"\(cid:\d+\)", text):
+        return "paragraph", "unresolved", ["PDF_GLYPH_UNRESOLVED"]
+    if re.match(r"^(fig(?:ure)?\.?\s*\d+)", text, re.IGNORECASE):
+        return "figure_caption", "unresolved", ["PDF_FIGURE_UNRESOLVED"]
+    if re.match(r"^table\s+\d+", text, re.IGNORECASE) and not re.match(
+        r"^table\s+\d+\s+(?:reports?|shows?|presents?|summari[sz]es?|compares?|formally|columns?)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return "table_caption", "unresolved", ["PDF_TABLE_UNRESOLVED"]
+    if "=" in text and len(text) < 300:
+        return "paragraph", "unresolved", ["PDF_EQUATION_UNRESOLVED"]
+    if ambiguous_hyphen:
+        return "paragraph", "unresolved", ["PDF_DEHYPHENATION_AMBIGUOUS"]
+    if _heading_candidate_line(lines[0]):
+        return "paragraph", "unresolved", ["PDF_HEADING_AMBIGUOUS"]
+    if compact in {"articleinfo", "keywords"}:
+        return "metadata", "ok", []
+    return "paragraph", "ok", []
+
+
+def _make_block(
+    source_sha256: str,
+    run_id: str,
+    ordinal: int,
+    kind: str,
+    status: str,
+    disposition: str,
+    lines: list[LayoutLine],
+    page: PdfPageObservation,
+    *,
+    issues: list[str],
+    text: str | None = None,
+) -> PdfBlock:
+    object_refs = [object_ref for line in lines for object_ref in line.object_refs]
+    bbox = _union_bbox([line.bbox for line in lines])
+    text = _join_paragraph_lines(lines, set())[0] if text is None else text
+    raw_text = "\n".join(line.raw_text for line in lines)
+    transformations = []
+    if raw_text != text:
+        transformations.append(
+            {
+                "kind": "join_line",
+                "input_refs": object_refs,
+                "before": raw_text,
+                "after": text,
+                "rule": "pdf-layout-v1",
+            }
+        )
+    return PdfBlock(
+        1,
+        make_block_id(source_sha256, run_id, object_refs),
+        source_sha256,
+        run_id,
+        ordinal,
+        kind,
+        status,  # type: ignore[arg-type]
+        disposition,  # type: ignore[arg-type]
+        {"overall": 1.0 if status == "ok" else None, "text": 1.0, "kind": None, "order": 1.0},
+        [
+            {
+                "page": page.page,
+                "bbox": bbox,
+                "page_width": page.width,
+                "page_height": page.height,
+                "media_box": page.media_box,
+                "crop_box": page.crop_box,
+                "rotation": page.rotation,
+                "coord_space": "pdf_points",
+                "origin": "top_left",
+            }
+        ],
+        object_refs,
+        raw_text,
+        text,
+        None,
+        None,
+        [],
+        None,
+        None,
+        transformations,
+        issues,
+        f"pages/{page.page}/layout/{ordinal}",
+    )
+
+
+def _join_paragraph_lines(
+    lines: list[LayoutLine], document_tokens: set[str]
+) -> tuple[str, bool]:
+    output = ""
+    ambiguous = False
+    for line in lines:
+        if not output:
+            output = line.text
+        elif output.endswith("-") and line.text[:1].islower():
+            head = re.match(r"[A-Za-z]+", line.text)
+            tail = re.search(r"[A-Za-z]+$", output[:-1])
+            attached = bool(re.search(r"[A-Za-z]-$", output))
+            if (
+                attached
+                and head
+                and tail
+                and (tail.group(0) + head.group(0)).casefold() in document_tokens
+            ):
+                # Soft syllable break corroborated elsewhere in the document: join.
+                output = output[:-1] + line.text
+            else:
+                # Genuine compound or uncorroborated break: keep the hyphen.
+                output += line.text
+                ambiguous = True
+        else:
+            output += " " + line.text
+    return re.sub(r"\s+", " ", output).strip(), ambiguous
+
+
+def _heading_level(text: str) -> int | None:
+    compact = re.sub(r"\s+", "", text).casefold()
+    if compact in {"abstract", "references"}:
+        return 2
+    match = re.match(r"^(\d+(?:\.\d+)*)\.?\s+\S", text)
+    if not match:
+        return None
+    return min(2 + match.group(1).count("."), 6)
+
+
+def _is_heading_line(line: LayoutLine) -> bool:
+    compact = re.sub(r"\s+", "", line.text).casefold()
+    if compact in KNOWN_HEADINGS:
+        return True
+    if "bold" not in line.fontname.casefold():
+        return False
+    return _heading_level(line.text) is not None
+
+
+def _heading_candidate_line(line: LayoutLine) -> bool:
+    if _is_heading_line(line):
+        return True
+    text = line.text.strip()
+    return (
+        "bold" in line.fontname.casefold()
+        and len(text) <= 120
+        and len(text.split()) <= 16
+        and not text.endswith((".", ",", ";"))
+    )
+
+
+def _looks_like_page_number(text: str) -> bool:
+    return bool(re.fullmatch(r"(?:\d+|[ivxlcdm]+)", text.strip(), re.IGNORECASE))
+
+
+def _document_tokens(lines_by_page: dict[int, list[LayoutLine]]) -> set[str]:
+    tokens: set[str] = set()
+    for lines in lines_by_page.values():
+        for line in lines:
+            for token in re.findall(r"[A-Za-z]{2,}", line.text):
+                tokens.add(token.casefold())
+    return tokens
+
+
+def _is_decorative_visual(item: RawPdfObject, policy: dict[str, Any]) -> bool:
+    """Annotations and hairline rules are artifacts, not recoverable content."""
+    if item.kind == "annotation":
+        return True
+    if item.kind == "image_occurrence":
+        return False
+    x0, y0, x1, y1 = item.bbox
+    return min(x1 - x0, y1 - y0) <= float(policy["rule_thickness_pt"])
+
+
+def _valid_unicode(value: str) -> bool:
+    if not value or value == "\ufffd" or re.fullmatch(r"\(cid:\d+\)", value):
+        return False
+    point = ord(value[0])
+    return not (0xD800 <= point <= 0xDFFF or 0xE000 <= point <= 0xF8FF or point < 32)
+
+
+def _figure_visuals(
+    page_objects: list[RawPdfObject], caption_bbox: list[float], policy: dict[str, Any]
+) -> tuple[list[RawPdfObject], list[float] | None]:
+    """Return content-bearing visuals (images, curves) beside a figure caption."""
+    gap = float(policy["table_region_gap_pt"])
+    visuals = [
+        item
+        for item in page_objects
+        if item.kind in {"image_occurrence", "curve"}
+        and _adjacent_bbox(item.bbox, caption_bbox, gap)
+    ]
+    if not visuals:
+        return [], None
+    return visuals, _union_bbox([item.bbox for item in visuals])
+
+
+def _adjacent_bbox(bbox: list[float], caption: list[float], gap: float) -> bool:
+    x0, y0, x1, y1 = bbox
+    cx0, cy0, cx1, cy1 = caption
+    return min(abs(y0 - cy1), abs(y1 - cy0)) <= gap and min(abs(x0 - cx1), abs(x1 - cx0)) <= gap + (cx1 - cx0)
+
+
+def _caption_label(text: str, kind: str) -> str:
+    pattern = r"(?:Figure|Fig\.?)\s+\d+" if kind == "figure" else r"Table\s+\d+"
+    match = re.match(pattern, text, re.IGNORECASE)
+    return match.group(0) if match else text.strip()
+
+
+def _build_elements(
+    page_blocks: list[PdfBlock],
+    page: PdfPageObservation,
+    page_objects: list[RawPdfObject],
+    source_sha256: str,
+    run_id: str,
+    policy: dict[str, Any],
+    ordinal_start: int,
+    visual_clusters: list[pdf_visual.VisualCluster],
+    reserved_figure_refs: set[str],
+) -> tuple[
+    list[PdfBlock],
+    dict[int, PdfBlock],
+    dict[str, tuple[str, str, str | None]],
+    dict[int, tuple[str, PdfBlock]],
+]:
+    """Resolve captions into table/figure blocks.
+
+    Returns ``(new_blocks, updated_captions, claims, placements)`` where
+    ``claims`` maps an object_ref to ``(disposition, block_id, reason_code)``.
+    ``updated_captions`` maps a caption's *ordinal* to a status-``ok`` copy (the
+    caption text itself is faithful and translatable).
+    """
+    elements: list[PdfBlock] = []
+    updated: dict[int, PdfBlock] = {}
+    claims: dict[str, tuple[str, str, str | None]] = {}
+    placements: dict[int, tuple[str, PdfBlock]] = {}
+    ordinal = ordinal_start
+    for block in page_blocks:
+        if block.kind == "table_caption":
+            caption_bbox = block.provenance[0]["bbox"]
+            table_objects = [
+                item for item in page_objects if item.object_ref not in reserved_figure_refs
+            ]
+            grid = pdf_table.reconstruct_grid(table_objects, caption_bbox, policy)
+            if grid is not None:
+                in_grid_chars = _chars_in_region(table_objects, grid, policy)
+                assignment = pdf_table.assign_chars_to_cells(in_grid_chars, grid, policy)
+            else:
+                assignment = None
+            if grid is not None and assignment is not None and pdf_table.verified(grid, assignment, policy):
+                rules = pdf_table._table_rules(table_objects, caption_bbox, policy)
+                refs = [item.object_ref for item in rules] + [
+                    item.object_ref for item in _chars_in_region(table_objects, grid, policy)
+                ]
+                payload = pdf_table.build_payload(grid, assignment)
+                rule_bboxes = [item.bbox for item in rules] or [caption_bbox]
+                line = _element_line(page, _union_bbox(rule_bboxes), "Table", refs)
+                element = replace(
+                    _make_block(
+                        source_sha256, run_id, ordinal, "table", "ok", "render", [line], page,
+                        issues=[], text="Table",
+                    ),
+                    table=payload,
+                )
+                # char accounting: in-grid chars move to the table block
+                for item in _chars_in_region(table_objects, grid, policy):
+                    claims[item.object_ref] = ("rendered", element.block_id, None)
+                for item in rules:
+                    claims[item.object_ref] = ("rendered", element.block_id, None)
+                elements.append(element)
+                placements[block.ordinal] = ("after", element)
+                ordinal += 1
+                updated[block.ordinal] = replace(block, status="ok", issues=[], disposition="render")
+            else:
+                # Honest image fallback. If the table has a captured box (rules) we keep
+                # them as an unresolved visual placeholder; an unboxed table has no rules
+                # to claim, so the unresolved caption itself carries the incompleteness.
+                rules = pdf_table._table_rules(table_objects, caption_bbox, policy)
+                if rules:
+                    line = _element_line(
+                        page,
+                        _union_bbox([item.bbox for item in rules]),
+                        "Unresolved table region.",
+                        [item.object_ref for item in rules],
+                    )
+                    element = _make_block(
+                        source_sha256, run_id, ordinal, "table", "unresolved",
+                        "unresolved_placeholder", [line], page,
+                        issues=["PDF_TABLE_UNRESOLVED"], text="Unresolved table region.",
+                    )
+                    for item in rules:
+                        claims[item.object_ref] = (
+                            "unresolved", element.block_id, "PDF_TABLE_UNRESOLVED"
+                        )
+                    elements.append(element)
+                    placements[block.ordinal] = ("after", element)
+                    ordinal += 1
+                    updated[block.ordinal] = replace(
+                        block, status="ok", issues=[], disposition="render"
+                    )
+        elif block.kind == "figure_caption":
+            caption_bbox = block.provenance[0]["bbox"]
+            selected = pdf_visual.figure_clusters(
+                visual_clusters,
+                caption_bbox,
+                set(claims),
+                max_gap=float(policy["table_region_gap_pt"]),
+            )
+            visuals = [item for cluster in selected for item in cluster.objects]
+            region = _union_bbox([list(cluster.bbox) for cluster in selected]) if selected else None
+            label = _caption_label(block.text or "", "figure")
+            if visuals and region:
+                # A concrete visual (embedded image or vector cluster) is capturable as an
+                # asset with a bbox; only a caption with no visual stays unresolved.
+                figure_chars = [
+                    item
+                    for item in _chars_in_bbox(page_objects, region, policy)
+                    if item.object_ref not in block.source_object_refs
+                ]
+                refs = [item.object_ref for item in visuals + figure_chars]
+                line = _element_line(page, region, label, refs)
+                element = _make_block(
+                    source_sha256, run_id, ordinal, "figure", "ok", "render",
+                    [line], page, issues=[], text=label,
+                )
+                for item in visuals + figure_chars:
+                    claims[item.object_ref] = ("rendered", element.block_id, None)
+                elements.append(element)
+                placements[block.ordinal] = ("before", element)
+                ordinal += 1
+                updated[block.ordinal] = replace(block, status="ok", issues=[], disposition="render")
+    return elements, updated, claims, placements
+
+
+def _verified_figure_chars(
+    page: PdfPageObservation,
+    lines: list[LayoutLine],
+    document_tokens: set[str],
+    artifact_keys: set[str],
+    visual_clusters: list[pdf_visual.VisualCluster],
+    policy: dict[str, Any],
+) -> tuple[set[str], set[str]]:
+    """Return captured chart chars and visual refs from one caption decision."""
+    artifact_lines = [
+        line for line in lines if _artifact_key(page, line, policy) in artifact_keys
+    ]
+    content_lines = [line for line in lines if line not in artifact_lines]
+    ordered, _ = _reading_order(page, content_lines, policy)
+    paragraphs = _paragraphs(ordered)
+    consumed: set[str] = set()
+    claimed_visuals: set[str] = set()
+    for paragraph in paragraphs:
+        text, ambiguous_hyphen = _join_paragraph_lines(paragraph, document_tokens)
+        kind, _, _ = _classify_block(text, False, paragraph, ambiguous_hyphen)
+        if kind != "figure_caption":
+            continue
+        caption_bbox = _union_bbox([line.bbox for line in paragraph])
+        selected = pdf_visual.figure_clusters(
+            visual_clusters,
+            caption_bbox,
+            claimed_visuals,
+            max_gap=float(policy["table_region_gap_pt"]),
+        )
+        if not selected:
+            continue
+        claimed_visuals.update(
+            item.object_ref for cluster in selected for item in cluster.objects
+        )
+        region = _union_bbox([list(cluster.bbox) for cluster in selected])
+        consumed.update(
+            item.object_ref
+            for item in _chars_in_bbox(page.objects, region, policy)
+            if item.object_ref not in {
+                object_ref for line in paragraph for object_ref in line.object_refs
+            }
+        )
+    return consumed, claimed_visuals
+
+
+def _verified_table_chars(
+    page: PdfPageObservation,
+    lines: list[LayoutLine],
+    document_tokens: set[str],
+    artifact_keys: set[str],
+    policy: dict[str, Any],
+) -> set[str]:
+    """Return char refs that belong to a verified (boxed, accounted) table.
+
+    These characters are removed from the text layer so they are not rendered
+    twice — once as body text and once as the structured table. Detection is a
+    cheap pre-pass: it needs the captions that only the text layer can surface.
+    """
+    artifact_lines = [line for line in lines if _artifact_key(page, line, policy) in artifact_keys]
+    content_lines = [line for line in lines if line not in artifact_lines]
+    ordered, _ = _reading_order(page, content_lines, policy)
+    paragraphs = _paragraphs(ordered)
+    consumed: set[str] = set()
+    for paragraph in paragraphs:
+        text, ambiguous_hyphen = _join_paragraph_lines(paragraph, document_tokens)
+        kind, _, _ = _classify_block(text, False, paragraph, ambiguous_hyphen)
+        if kind != "table_caption":
+            continue
+        caption_bbox = _union_bbox([line.bbox for line in paragraph])
+        grid = pdf_table.reconstruct_grid(page.objects, caption_bbox, policy)
+        if grid is None:
+            continue
+        in_grid = _chars_in_region(page.objects, grid, policy)
+        assignment = pdf_table.assign_chars_to_cells(in_grid, grid, policy)
+        if pdf_table.verified(grid, assignment, policy):
+            consumed.update(char.object_ref for char in in_grid)
+    return consumed
+
+
+def _chars_in_region(
+    page_objects: list[RawPdfObject], grid: pdf_table.TableGrid, policy: dict[str, Any]
+) -> list[RawPdfObject]:
+    tolerance = float(policy["table_cell_overlap_tolerance_pt"])
+    x0, y0 = grid.x_bounds[0], grid.y_bounds[0]
+    x1, y1 = grid.x_bounds[-1], grid.y_bounds[-1]
+    return [
+        char
+        for char in page_objects
+        if char.kind == "char"
+        and char.payload
+        and x0 - tolerance <= char.bbox[0]
+        and char.bbox[2] <= x1 + tolerance
+        and y0 - tolerance <= char.bbox[1]
+        and char.bbox[3] <= y1 + tolerance
+    ]
+
+
+def _chars_in_bbox(
+    page_objects: list[RawPdfObject], bbox: list[float], policy: dict[str, Any]
+) -> list[RawPdfObject]:
+    tolerance = float(policy["table_cell_overlap_tolerance_pt"])
+    x0, y0, x1, y1 = bbox
+    return [
+        char
+        for char in page_objects
+        if char.kind == "char"
+        and char.payload
+        and x0 - tolerance <= (char.bbox[0] + char.bbox[2]) / 2 <= x1 + tolerance
+        and y0 - tolerance <= (char.bbox[1] + char.bbox[3]) / 2 <= y1 + tolerance
+    ]
+
+
+def _element_line(page: PdfPageObservation, bbox: list[float], text: str, refs: list[str]) -> LayoutLine:
+    return LayoutLine(page.page, bbox, text, text, refs, 0.0, "")
+
+
+def _equation_visual_overlap(
+    candidate: pdf_equation.EquationCandidate,
+    page_objects: list[RawPdfObject],
+    policy: dict[str, Any],
+) -> bool:
+    x0, y0, x1, y1 = candidate.bbox
+    tolerance = float(policy["table_cell_overlap_tolerance_pt"])
+    return any(
+        item.kind in {"image_occurrence", "curve"}
+        and item.bbox[2] >= x0 - tolerance
+        and item.bbox[0] <= x1 + tolerance
+        and item.bbox[3] >= y0 - tolerance
+        and item.bbox[1] <= y1 + tolerance
+        for item in page_objects
+    )
+
+
+def _union_bbox(boxes: list[list[float]]) -> list[float]:
+    return [
+        round(min(box[0] for box in boxes), 4),
+        round(min(box[1] for box in boxes), 4),
+        round(max(box[2] for box in boxes), 4),
+        round(max(box[3] for box in boxes), 4),
+    ]
+
+
+def _mark_reference_blocks(blocks: list[PdfBlock]) -> list[PdfBlock]:
+    in_references = False
+    output: list[PdfBlock] = []
+    for block in blocks:
+        compact = re.sub(r"\s+", "", block.text or "").casefold()
+        if block.kind == "section_heading" and compact == "references":
+            in_references = True
+        elif in_references and block.kind == "paragraph" and block.status == "ok":
+            block = replace(block, kind="reference")
+        output.append(block)
+    return output
+
+
+def _mark_cross_page_ambiguities(
+    blocks: list[PdfBlock],
+) -> tuple[list[PdfBlock], set[str]]:
+    by_page: dict[int, list[PdfBlock]] = defaultdict(list)
+    for block in blocks:
+        if block.disposition == "render":
+            by_page[block.provenance[0]["page"]].append(block)
+    ambiguous: set[str] = set()
+    for page in sorted(by_page):
+        if page + 1 not in by_page:
+            continue
+        left = next(
+            (item for item in reversed(by_page[page]) if item.kind in {"paragraph", "reference"}),
+            None,
+        )
+        right = next(
+            (item for item in by_page[page + 1] if item.kind in {"paragraph", "reference"}),
+            None,
+        )
+        if left is None or right is None:
+            continue
+        left_text, right_text = (left.text or "").rstrip(), (right.text or "").lstrip()
+        if left_text and right_text[:1].islower() and not left_text.endswith((".", "?", "!")):
+            ambiguous.update({left.block_id, right.block_id})
+    output = [
+        replace(
+            block,
+            status="unresolved",
+            disposition="unresolved_placeholder",
+            issues=sorted({*block.issues, "PDF_CROSS_PAGE_CONTINUATION_UNRESOLVED"}),
+        )
+        if block.block_id in ambiguous
+        else block
+        for block in blocks
+    ]
+    return output, ambiguous
