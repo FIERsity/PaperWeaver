@@ -1,0 +1,28 @@
+{
+  "guard": 0.002,
+  "papers": {
+    "pcbi-1002377": {
+      "order_ratio": 0.6255,
+      "precision": 0.506,
+      "recall": 0.5913
+    },
+    "pcbi-1005331": {
+      "order_ratio": 0.9102,
+      "precision": 0.8513,
+      "recall": 0.8502
+    },
+    "pcbi-1012374": {
+      "order_ratio": 0.8919,
+      "precision": 0.8167,
+      "recall": 0.8068
+    },
+    "pone-0251194": {
+      "order_ratio": 0.9868,
+      "precision": 0.8722,
+      "recall": 0.9192
+    }
+  },
+  "pinned_at": "2026-08-27T14:17:31Z",
+  "schema_version": 1,
+  "source_run_id": "20260827T183000Z-partition-bootstrap"
+}

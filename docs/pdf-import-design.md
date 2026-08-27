@@ -4,7 +4,7 @@
 目标版本：v0.5+，分期交付
 最后复核：2026-08-27
 
-P1 实现了不可变原件、稳定 run/block/object 身份、带摘要的字符/块/关系/对象账本、跨栏块分带的一/二栏文本顺序、重复文本/视觉页眉页码排除、逐页可见 ink component QA、规整审阅 Markdown、完整性门禁和 Passage provenance。4 组 PLOS PDF/JATS 对已有 exact LCS/shortest-edit regression minima，JOSS 已作为首篇真实 `complete → segment → translation → Markdown/PDF export` golden。P2 已实现 cluster-first figure asset、caption 分块与显式 `caption_of` 关系、闭合有框表验证、table-cell Passage、passage-slot map、render-tree 译文回填、asset 复制与 A4 表格渲染；无框/span 表和 captionless/歧义图簇仍走诚实 bbox crop。P3 确定性核心已能把文本层主行、下标、续行及右侧编号一一归属并生成 verified LaTeX/crop；复杂、位图、混合对象或含未支持 TeX glyph 的公式保持 unresolved。正式 99.5%/99% PLOS 语义验收仍须继续提高；QA 现输出 OCR page/block candidates，但 P4 OCR 引擎和 append-only supplement run 尚未实现。
+P1 实现了不可变原件、稳定 run/block/object 身份、带摘要的字符/块/关系/对象账本、跨栏块分带的一/二栏文本顺序、重复文本/视觉页眉页码排除、逐页可见 ink component QA、规整审阅 Markdown、完整性门禁和 Passage provenance。4 组 PLOS PDF/JATS 对已有分区计分（prose/table 双流）的 pinned regression floors，JOSS 已作为首篇真实 `complete → segment → translation → Markdown/PDF export` golden。P2 已实现 cluster-first figure asset、caption 分块与显式 `caption_of` 关系、闭合有框表验证、table-cell Passage、passage-slot map、render-tree 译文回填、asset 复制与 A4 表格渲染；无框/span 表和 captionless/歧义图簇仍走诚实 bbox crop。P3 确定性核心已能把文本层主行、下标、续行及右侧编号一一归属并生成 verified LaTeX/crop；复杂、位图、混合对象或含未支持 TeX glyph 的公式保持 unresolved。正式 99.5%/99% PLOS 语义验收仍须继续提高；QA 现输出 OCR page/block candidates，但 P4 OCR 引擎和 append-only supplement run 尚未实现。
 
 ## 0. 摘要与最终拍板
 
@@ -1364,8 +1364,20 @@ P0 必须提交并评审 `tests/corpus/pdf-jats-manifest.json`，至少固定 3 
 4 组 PLOS PDF/JATS 对、旧双栏、表格/公式/图片密集论文和公版扫描件；原文 bytes 与
 批跑 workspace 只进入被忽略的 `tmp/corpus-cache` / `tmp/corpus-runs`。runner 已按
 JATS body 与 PDF body blocks 计算 exact LCS/shortest-edit token recall、precision 与
-order ratio，并用 manifest 中评审过的逐篇 minimum 阻止回退。当前 minimum 只是已测
-baseline；仍须通过版式恢复把它提高到下述正式验收线，不能把低 baseline 冒充 P1 完成。
+order ratio，并用手动钉住的逐篇 floor 阻止回退。口径拍板（2026-08-27，v2）：
+
+- **分区计分**：prose 流（段落/标题/caption/公式）对齐 JATS body 去除 `table-wrap`
+  后的文本，table 流（verified 表格单元格）对齐 `table-wrap` 文本；聚合
+  recall/precision/order，method id `unicode-token-partitioned-v2`。否则“诚实升级
+  表格”会扰动混合 token 流，被误判为回退。
+- **floors 与 targets 分离**：manifest 只保留 `semantic_targets`（正式验收线
+  0.995/0.995/0.99，仅报告差距，不做门禁）；回归门禁用
+  `tests/corpus/semantic-floors.json`，由 `pdf_corpus.py pin-floors --from <run>`
+  以“实测 − guard(0.002)”生成，人 review 后随代码提交。floors 只能经该命令显式
+  移动，`run` 永不自动改写；floors 缺失时 `run` 直接报错。
+- **门禁进提交循环**：`scripts/check.sh`（ruff + pytest + 7 篇 corpus slice）是
+  提交前唯一入口；CI corpus job 在 push/PR 触发并缓存 checksum-pinned 下载。
+  targets 未达线前不得把 floors 数字冒充 P1 完成。
 
 P1 的文本指标直接拍板为：对 JATS/PDF 双方去除已标注 artifact，Unicode NFC、只展开规范允许的排版 ligature、collapse whitespace；tokenizer 按 Unicode letter/mark 连续串、数字连续串、单个 CJK 字符、单个数学/标点符号切 token。以 JATS body token 序列为 reference，按最短编辑对齐计算 token recall 与 precision，二者每篇都须 ≥99.5%；LCS order ratio 须 ≥99.0%；figure/table/equation/reference label recall 必须 100%。预先批准的“期刊 PDF 与 JATS 实际版本差异”从两边同位置剔除并在 manifest 留证，不能在测试失败后临时扩大 exclusion。
 

@@ -1,3 +1,4 @@
+import argparse
 import copy
 import hashlib
 import io
@@ -13,8 +14,12 @@ from scripts.pdf_corpus import (
     cached_path,
     diagnostic_tokens,
     fetch_file,
+    floor_gate,
     lcs_length,
+    load_floors,
     load_manifest,
+    partitioned_diagnostics,
+    pin_floors,
     render_report_markdown,
     run_paper,
     select_papers,
@@ -113,6 +118,105 @@ def test_lcs_alignment_measures_order_without_quadratic_matrix() -> None:
     assert lcs_length(["中", "文", "a"], ["文", "中", "a"]) == 2
 
 
+def test_partitioned_diagnostics_scores_streams_separately() -> None:
+    reference = {
+        "prose": diagnostic_tokens("alpha beta"),
+        "table": diagnostic_tokens("x y"),
+    }
+    candidate = {
+        "prose": diagnostic_tokens("alpha extra beta"),
+        "table": diagnostic_tokens("x y"),
+    }
+    result = partitioned_diagnostics(reference, candidate)
+    assert result["method"] == "unicode-token-partitioned-v2"
+    assert result["recall"] == 1.0
+    assert result["precision"] == 4 / 5
+    assert result["order_ratio"] == 1.0
+    assert result["partitions"]["table"]["recall"] == 1.0
+    assert result["gating"] is True
+
+
+def test_partitioned_diagnostics_never_borrows_across_streams() -> None:
+    reference = {"prose": diagnostic_tokens("a b"), "table": diagnostic_tokens("c")}
+    candidate = {"prose": diagnostic_tokens("a c b"), "table": diagnostic_tokens("")}
+    result = partitioned_diagnostics(reference, candidate)
+    assert result["recall"] == 2 / 3
+    assert result["partitions"]["table"]["recall"] == 0.0
+
+
+def test_load_floors_validates_structure(tmp_path: Path) -> None:
+    missing = tmp_path / "floors.json"
+    with pytest.raises(CorpusError, match="CORPUS_FLOORS_MISSING"):
+        load_floors(missing)
+    broken = tmp_path / "broken.json"
+    broken.write_text(json.dumps({"schema_version": 1, "papers": {}}), encoding="utf-8")
+    with pytest.raises(CorpusError, match="CORPUS_FLOORS_INVALID"):
+        load_floors(broken)
+    bad_values = tmp_path / "bad-values.json"
+    bad_values.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source_run_id": "20260827T000000Z-test",
+                "pinned_at": "2026-08-27T00:00:00Z",
+                "guard": 0.002,
+                "papers": {"pone-0251194": {"recall": 1.5, "precision": 0.5, "order_ratio": 0.5}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(CorpusError, match="CORPUS_FLOORS_INVALID"):
+        load_floors(bad_values)
+
+
+def test_floor_gate_bites_when_measurement_drops() -> None:
+    floors = {"recall": 0.9, "precision": 0.85, "order_ratio": 0.9}
+    assert floor_gate({"recall": 0.9, "precision": 0.85, "order_ratio": 0.9}, floors)["passed"]
+    dropped = floor_gate({"recall": 0.899, "precision": 0.85, "order_ratio": 0.9}, floors)
+    assert dropped["passed"] is False
+
+
+def test_pin_floors_writes_guarded_values_from_run_report(tmp_path: Path, capsys) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    report = {
+        "run_id": "20260827T000000Z-test",
+        "results": [
+            {
+                "id": "pone-0251194",
+                "error": None,
+                "token_diagnostics": {"recall": 0.9, "precision": 0.85, "order_ratio": 0.9},
+            },
+            {"id": "joss-04061", "error": None, "token_diagnostics": None},
+        ],
+    }
+    (run_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
+    floors = tmp_path / "floors.json"
+    arguments = argparse.Namespace(source_run=run_dir, floors=floors, guard=0.002)
+    assert pin_floors(arguments) == 0
+    payload = json.loads(floors.read_text(encoding="utf-8"))
+    assert payload["source_run_id"] == "20260827T000000Z-test"
+    assert payload["papers"]["pone-0251194"] == {
+        "recall": 0.898,
+        "precision": 0.848,
+        "order_ratio": 0.898,
+    }
+    assert "pin pone-0251194" in capsys.readouterr().out
+
+
+def test_pin_floors_refuses_runs_with_errors(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    report = {
+        "run_id": "20260827T000000Z-test",
+        "results": [{"id": "acl-tables-2024", "error": "ValueError: test", "token_diagnostics": None}],
+    }
+    (run_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
+    arguments = argparse.Namespace(source_run=run_dir, floors=tmp_path / "floors.json", guard=0.002)
+    with pytest.raises(CorpusError, match="CORPUS_PIN_REFUSED"):
+        pin_floors(arguments)
+
+
 def test_report_is_stably_ordered_and_surfaces_errors(monkeypatch) -> None:
     manifest = load_manifest(MANIFEST)
     papers = select_papers(manifest, {"joss-04061", "acl-tables-2024"})
@@ -160,7 +264,8 @@ def test_cached_real_paper_import(tmp_path: Path) -> None:
     paper = select_papers(manifest, {paper_id})[0]
     cache = Path(os.environ.get("PAPERWEAVER_CORPUS_CACHE", "tmp/corpus-cache"))
     verify_cached_file(cached_path(cache, paper_id, "pdf"), paper["files"]["pdf"], "pdf")
-    result = run_paper(paper, cache, tmp_path / "run")
+    floors = load_floors().get(paper_id) if "jats" in paper["files"] else None
+    result = run_paper(paper, cache, tmp_path / "run", floors)
     assert result["error"] is None
     assert result["idempotent"] is True
     assert result["status"] in {"complete", "complete_with_warnings", "incomplete", "unsupported"}

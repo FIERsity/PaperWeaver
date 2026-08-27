@@ -32,13 +32,16 @@ jobs:
       - run: pytest tests/test_pdf_import.py
 
   corpus:
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - uses: actions/cache@v4
+        with:
+          path: tmp/corpus-cache
+          key: corpus-${{ hashFiles('tests/corpus/pdf-jats-manifest.json') }}
       - run: python -m pip install -e '.[dev,pdf]'
       - name: Fetch checksum-pinned open papers
         run: >-

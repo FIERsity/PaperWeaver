@@ -26,6 +26,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = REPOSITORY_ROOT / "tests" / "corpus" / "pdf-jats-manifest.json"
 DEFAULT_CACHE = REPOSITORY_ROOT / "tmp" / "corpus-cache"
 DEFAULT_RUNS = REPOSITORY_ROOT / "tmp" / "corpus-runs"
+DEFAULT_FLOORS = REPOSITORY_ROOT / "tests" / "corpus" / "semantic-floors.json"
 USER_AGENT = "PaperWeaver/0.5 open-paper regression corpus"
 ID_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -47,7 +48,7 @@ LICENSE_KEYS = {"identifier", "url", "evidence_url"}
 FILE_KEYS = {"url", "sha256", "size_bytes", "page_count"}
 EXPECTED_KEYS = {
     "jats_elements",
-    "semantic_minimums",
+    "semantic_targets",
     "required_status",
     "approved_differences",
 }
@@ -65,8 +66,8 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as error:
         raise CorpusError(f"CORPUS_MANIFEST_INVALID: {error}") from error
     _require_exact_keys(manifest, ROOT_KEYS, "manifest")
-    if manifest["schema_version"] != 1:
-        raise CorpusError("CORPUS_MANIFEST_INVALID: schema_version must be 1")
+    if manifest["schema_version"] != 2:
+        raise CorpusError("CORPUS_MANIFEST_INVALID: schema_version must be 2")
     if not ID_PATTERN.fullmatch(manifest["corpus_id"]):
         raise CorpusError("CORPUS_MANIFEST_INVALID: corpus_id is not a stable slug")
     if not isinstance(manifest["description"], str) or not manifest["description"].strip():
@@ -121,13 +122,13 @@ def _validate_paper(paper: dict[str, Any]) -> None:
         for value in expected["approved_differences"]
     ):
         raise CorpusError(f"CORPUS_MANIFEST_INVALID: {paper['id']} differences are invalid")
-    minimums = expected["semantic_minimums"]
+    targets = expected["semantic_targets"]
     if "jats" in files:
-        if not isinstance(minimums, dict) or set(minimums) != SEMANTIC_KEYS:
-            raise CorpusError(f"CORPUS_MANIFEST_INVALID: {paper['id']} semantic gate is missing")
-        if any(not isinstance(value, (int, float)) or not 0 <= value <= 1 for value in minimums.values()):
-            raise CorpusError(f"CORPUS_MANIFEST_INVALID: {paper['id']} semantic gate is invalid")
-    elif minimums is not None:
+        if not isinstance(targets, dict) or set(targets) != SEMANTIC_KEYS:
+            raise CorpusError(f"CORPUS_MANIFEST_INVALID: {paper['id']} semantic targets are missing")
+        if any(not isinstance(value, (int, float)) or not 0 <= value <= 1 for value in targets.values()):
+            raise CorpusError(f"CORPUS_MANIFEST_INVALID: {paper['id']} semantic targets are invalid")
+    elif targets is not None:
         raise CorpusError(f"CORPUS_MANIFEST_INVALID: {paper['id']} has no JATS semantic oracle")
     if expected["required_status"] not in {None, "complete"}:
         raise CorpusError(f"CORPUS_MANIFEST_INVALID: {paper['id']} status gate is invalid")
@@ -309,6 +310,42 @@ def token_diagnostics(reference: list[str], candidate: list[str]) -> dict[str, A
     }
 
 
+def partitioned_diagnostics(
+    reference: dict[str, list[str]], candidate: dict[str, list[str]]
+) -> dict[str, Any]:
+    """Score prose and table streams separately, then aggregate honestly.
+
+    Table text is aligned against table text and prose against prose, so
+    promoting an unstructured region into a verified table can never look
+    like a recall regression merely because tokens changed streams.
+    """
+    partitions: dict[str, dict[str, Any]] = {}
+    totals = {"reference_tokens": 0, "candidate_tokens": 0, "multiset_overlap_tokens": 0, "aligned_tokens": 0}
+    for name in ("prose", "table"):
+        diagnostics = token_diagnostics(reference[name], candidate[name])
+        partitions[name] = diagnostics
+        for key in totals:
+            totals[key] += diagnostics[key]
+    reference_total = totals["reference_tokens"]
+    candidate_total = totals["candidate_tokens"]
+    return {
+        "method": "unicode-token-partitioned-v2",
+        "reference_tokens": reference_total,
+        "candidate_tokens": candidate_total,
+        "multiset_overlap_tokens": totals["multiset_overlap_tokens"],
+        "aligned_tokens": totals["aligned_tokens"],
+        "recall": totals["aligned_tokens"] / reference_total if reference_total else 1.0,
+        "precision": totals["aligned_tokens"] / candidate_total if candidate_total else 1.0,
+        "order_ratio": (
+            totals["aligned_tokens"] / totals["multiset_overlap_tokens"]
+            if totals["multiset_overlap_tokens"]
+            else 1.0
+        ),
+        "partitions": partitions,
+        "gating": True,
+    }
+
+
 def lcs_length(reference: list[str], candidate: list[str]) -> int:
     """Return exact LCS length using a deterministic bit-parallel algorithm."""
     positions: dict[str, int] = {}
@@ -332,13 +369,28 @@ def _is_cjk(character: str) -> bool:
     )
 
 
-def _jats_body_text(path: Path) -> str:
+def _jats_streams(path: Path) -> dict[str, str]:
+    """Split the JATS body into prose and table-wrap text streams."""
     root = ET.parse(path).getroot()
     body = next((item for item in root.iter() if item.tag.rsplit("}", 1)[-1] == "body"), None)
-    return " ".join(body.itertext()) if body is not None else ""
+    table_parts: list[str] = []
+
+    def prose_text(node: ET.Element) -> str:
+        parts = [node.text or ""]
+        for child in node:
+            if child.tag.rsplit("}", 1)[-1] == "table-wrap":
+                table_parts.append(" ".join(child.itertext()))
+            else:
+                parts.append(prose_text(child))
+            parts.append(child.tail or "")
+        return " ".join(part for part in parts if part and part.strip())
+
+    prose = prose_text(body) if body is not None else ""
+    return {"prose": prose, "table": " ".join(table_parts)}
 
 
-def _pdf_body_text(project: Path) -> str:
+def _pdf_streams(project: Path) -> dict[str, str]:
+    """Split the PDF body into prose and verified-table text streams."""
     manifest = json.loads(
         (project / "source" / "pdf" / "manifest.json").read_text(encoding="utf-8")
     )
@@ -351,7 +403,8 @@ def _pdf_body_text(project: Path) -> str:
         / "base-blocks.jsonl"
     )
     blocks = [json.loads(line) for line in blocks_path.read_text(encoding="utf-8").splitlines()]
-    lines: list[str] = []
+    prose_lines: list[str] = []
+    table_lines: list[str] = []
     in_body = False
     stop_headings = {"acknowledgments", "acknowledgements", "references"}
     for block in blocks:
@@ -366,12 +419,15 @@ def _pdf_body_text(project: Path) -> str:
         if not in_body:
             continue
         if kind in {"section_heading", "paragraph", "figure_caption", "table_caption"}:
-            lines.append(text)
+            prose_lines.append(text)
         elif kind == "equation":
-            lines.append((block.get("raw_text") or text).strip())
+            prose_lines.append((block.get("raw_text") or text).strip())
         elif kind == "table" and block["status"] == "ok" and block.get("table"):
-            lines.extend(" ".join(row) for row in block["table"]["rows"])
-    return "\n".join(value for value in lines if value)
+            table_lines.extend(" ".join(row) for row in block["table"]["rows"])
+    return {
+        "prose": "\n".join(value for value in prose_lines if value),
+        "table": "\n".join(value for value in table_lines if value),
+    }
 
 
 def environment_record() -> dict[str, Any]:
@@ -392,7 +448,49 @@ def environment_record() -> dict[str, Any]:
     }
 
 
-def run_paper(paper: dict[str, Any], cache_root: Path, run_root: Path) -> dict[str, Any]:
+def load_floors(path: Path = DEFAULT_FLOORS) -> dict[str, dict[str, float]]:
+    """Load the pinned per-paper semantic regression floors."""
+    if not path.exists():
+        raise CorpusError(
+            f"CORPUS_FLOORS_MISSING: {path} (pin them first with `pdf_corpus.py pin-floors --from <run>`)"
+        )
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise CorpusError(f"CORPUS_FLOORS_INVALID: {error}") from error
+    if not isinstance(data, dict) or set(data) != {
+        "schema_version", "source_run_id", "pinned_at", "guard", "papers"
+    }:
+        raise CorpusError("CORPUS_FLOORS_INVALID: floors keys must be guard, papers, pinned_at, schema_version, source_run_id")
+    if data["schema_version"] != 1:
+        raise CorpusError("CORPUS_FLOORS_INVALID: schema_version must be 1")
+    papers = data["papers"]
+    if not isinstance(papers, dict) or not papers:
+        raise CorpusError("CORPUS_FLOORS_INVALID: papers must be a non-empty object")
+    for paper_id, floors in papers.items():
+        if not ID_PATTERN.fullmatch(paper_id) or not isinstance(floors, dict):
+            raise CorpusError(f"CORPUS_FLOORS_INVALID: {paper_id} entry is invalid")
+        if set(floors) != SEMANTIC_KEYS or any(
+            not isinstance(value, (int, float)) or not 0 <= value <= 1 for value in floors.values()
+        ):
+            raise CorpusError(f"CORPUS_FLOORS_INVALID: {paper_id} floors are invalid")
+    return papers
+
+
+def floor_gate(measured: dict[str, Any], floors: dict[str, float]) -> dict[str, Any]:
+    """Compare measured aggregate semantics against pinned regression floors."""
+    return {
+        "floors": dict(floors),
+        "passed": all(measured[name] >= floors[name] for name in SEMANTIC_KEYS),
+    }
+
+
+def run_paper(
+    paper: dict[str, Any],
+    cache_root: Path,
+    run_root: Path,
+    floors: dict[str, float] | None = None,
+) -> dict[str, Any]:
     from paperweaver.core import import_paper, init_project
     from paperweaver.pdf_contracts import PdfUnsupportedError
 
@@ -434,18 +532,18 @@ def run_paper(paper: dict[str, Any], cache_root: Path, run_root: Path) -> dict[s
         result["metrics"] = qa["metrics"]
         result["issue_codes"] = dict(sorted(Counter(item["code"] for item in qa["issues"]).items()))
         if "jats" in paper["files"]:
-            result["token_diagnostics"] = token_diagnostics(
-                diagnostic_tokens(_jats_body_text(jats)),
-                diagnostic_tokens(_pdf_body_text(project)),
+            if floors is None:
+                raise CorpusError(
+                    f"CORPUS_FLOORS_MISSING: no pinned floors for {paper['id']}"
+                )
+            reference_streams = _jats_streams(jats)
+            candidate_streams = _pdf_streams(project)
+            result["token_diagnostics"] = partitioned_diagnostics(
+                {name: diagnostic_tokens(text) for name, text in reference_streams.items()},
+                {name: diagnostic_tokens(text) for name, text in candidate_streams.items()},
             )
-            minimums = paper["expected"]["semantic_minimums"]
-            result["semantic_gate"] = {
-                "minimums": minimums,
-                "passed": all(
-                    result["token_diagnostics"][name] >= minimums[name]
-                    for name in SEMANTIC_KEYS
-                ),
-            }
+            result["semantic_targets"] = paper["expected"]["semantic_targets"]
+            result["semantic_gate"] = floor_gate(result["token_diagnostics"], floors)
     except (CorpusError, FileExistsError, FileNotFoundError, PdfUnsupportedError, RuntimeError, ValueError) as error:
         result["error"] = f"{type(error).__name__}: {error}"
     result["duration_seconds"] = round(time.monotonic() - started, 3)
@@ -480,6 +578,15 @@ def build_report(
     }
 
 
+def _floor_cell(measured: dict[str, Any] | None, key: str) -> str:
+    if not measured:
+        return ""
+    floors = measured.get("floors") or {}
+    if not floors:
+        return f"{measured[key]:.4f}"
+    return f"{measured[key]:.4f} ({floors[key]:.4f})"
+
+
 def render_report_markdown(report: dict[str, Any]) -> str:
     lines = [
         "# Open PDF corpus report",
@@ -491,20 +598,80 @@ def render_report_markdown(report: dict[str, Any]) -> str:
         f"- Semantic gate failures: `{report['summary']['semantic_failures']}`",
         f"- Status gate failures: `{report['summary']['status_failures']}`",
         "",
-        "| Paper | Status | Pages | Figures | Tables | Equations | Unresolved | Seconds |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Paper | Status | Pages | Figures | Tables | Equations | Unresolved | Recall (floor) | Precision (floor) | Order (floor) | Seconds |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for item in report["results"]:
         metrics = item["metrics"]
+        diagnostics = item.get("token_diagnostics")
         lines.append(
             f"| `{item['id']}` | {item['status']} | {metrics.get('pages', '')} | "
             f"{metrics.get('verified_figures', '')} | {metrics.get('verified_tables', '')} | "
             f"{metrics.get('verified_equations', '')} | {metrics.get('unresolved_blocks', '')} | "
-            f"{item['duration_seconds']} |"
+            f"{_floor_cell(diagnostics, 'recall')} | {_floor_cell(diagnostics, 'precision')} | "
+            f"{_floor_cell(diagnostics, 'order_ratio')} | {item['duration_seconds']} |"
         )
         if item["error"]:
             lines.append(f"\nError for `{item['id']}`: `{item['error']}`\n")
+    for item in report["results"]:
+        diagnostics = item.get("token_diagnostics")
+        targets = item.get("semantic_targets")
+        if not diagnostics or not targets:
+            continue
+        gaps = [
+            f"{name} {diagnostics[name]:.4f}/{targets[name]}"
+            for name in sorted(SEMANTIC_KEYS)
+            if diagnostics[name] < targets[name]
+        ]
+        if gaps:
+            lines.append(f"\nTarget gap for `{item['id']}`: {', '.join(gaps)}\n")
     return "\n".join(lines) + "\n"
+
+
+def pin_floors(args: argparse.Namespace) -> int:
+    """Pin semantic floors from a finished run; the diff is reviewed in git."""
+    report_path = args.source_run / "report.json"
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise CorpusError(f"CORPUS_PIN_REFUSED: cannot read {report_path}: {error}") from error
+    if not isinstance(args.guard, (int, float)) or not 0 <= args.guard <= 0.05:
+        raise CorpusError("CORPUS_PIN_REFUSED: --guard must be between 0 and 0.05")
+    papers: dict[str, dict[str, float]] = {}
+    for item in report.get("results", []):
+        diagnostics = item.get("token_diagnostics")
+        if not diagnostics:
+            continue
+        if item.get("error"):
+            raise CorpusError(f"CORPUS_PIN_REFUSED: {item['id']} ended with an error")
+        papers[item["id"]] = {
+            name: max(0.0, round(diagnostics[name] - args.guard, 4)) for name in SEMANTIC_KEYS
+        }
+    if not papers:
+        raise CorpusError("CORPUS_PIN_REFUSED: the run has no JATS semantic results")
+    previous = load_floors(args.floors) if args.floors.exists() else {}
+    for paper_id in sorted(papers):
+        old_floors = previous.get(paper_id)
+        new_floors = papers[paper_id]
+        if old_floors:
+            changes = ", ".join(
+                f"{name} {old_floors[name]:.4f}->{new_floors[name]:.4f}" for name in sorted(SEMANTIC_KEYS)
+            )
+        else:
+            changes = ", ".join(f"{name} {new_floors[name]:.4f}" for name in sorted(SEMANTIC_KEYS))
+        print(f"pin {paper_id}: {changes}")
+    payload = {
+        "schema_version": 1,
+        "source_run_id": report.get("run_id", "unknown"),
+        "pinned_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "guard": args.guard,
+        "papers": dict(sorted(papers.items())),
+    }
+    args.floors.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(f"pinned {len(papers)} papers -> {args.floors}")
+    return 0
 
 
 def _selection_arguments(command: argparse.ArgumentParser) -> None:
@@ -526,12 +693,21 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--runs", type=Path, default=DEFAULT_RUNS)
     run.add_argument("--run-id")
     run.add_argument("--jobs", type=int, default=1)
+    run.add_argument("--floors", type=Path, default=DEFAULT_FLOORS)
+    pin = commands.add_parser(
+        "pin-floors", help="Pin semantic regression floors from a finished run report"
+    )
+    pin.add_argument("--from", dest="source_run", type=Path, required=True)
+    pin.add_argument("--floors", type=Path, default=DEFAULT_FLOORS)
+    pin.add_argument("--guard", type=float, default=0.002)
     return root
 
 
 def main(arguments: list[str] | None = None) -> int:
     args = parser().parse_args(arguments)
     try:
+        if args.command == "pin-floors":
+            return pin_floors(args)
         manifest = load_manifest(args.manifest)
         papers = select_papers(manifest, set(args.id), set(args.tag))
         if args.command in {"fetch", "verify"}:
@@ -553,15 +729,30 @@ def main(arguments: list[str] | None = None) -> int:
         if run_root.exists():
             raise CorpusError(f"CORPUS_RUN_EXISTS: {run_root}")
         run_root.mkdir(parents=True)
+        jats_ids = {paper["id"] for paper in papers if "jats" in paper["files"]}
+        floors = load_floors(args.floors) if jats_ids else {}
+        if jats_ids:
+            missing = jats_ids - set(floors)
+            unknown = set(floors) - jats_ids
+            if missing:
+                raise CorpusError(
+                    "CORPUS_FLOORS_MISSING: no pinned floors for " + ", ".join(sorted(missing))
+                )
+            if unknown:
+                raise CorpusError(
+                    "CORPUS_FLOORS_MISMATCH: floors cover unknown ids " + ", ".join(sorted(unknown))
+                )
         results: list[dict[str, Any]] = []
         if args.jobs == 1:
             for paper in papers:
                 print(f"running {paper['id']}", flush=True)
-                results.append(run_paper(paper, args.cache, run_root))
+                results.append(run_paper(paper, args.cache, run_root, floors.get(paper["id"])))
         else:
             with ProcessPoolExecutor(max_workers=args.jobs) as executor:
                 futures = {
-                    executor.submit(run_paper, paper, args.cache, run_root): paper["id"]
+                    executor.submit(
+                        run_paper, paper, args.cache, run_root, floors.get(paper["id"])
+                    ): paper["id"]
                     for paper in papers
                 }
                 for future in as_completed(futures):
