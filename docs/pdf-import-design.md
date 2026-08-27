@@ -891,11 +891,16 @@ else:
 
 #### Table
 
-P2 先用 pdfplumber `lines/lines_strict` 检测有框表，`text` strategy 只产 candidate。cell 文本必须与表区字符进行一一 accounting；字符落入多个 cell、落在 cell 外、列数不一致都不允许 `structure_verified=true`。无框表默认 unresolved，交给 table draft 或后续 backend。
+表格重建有两条可提升路径，其余一律 honest fallback：
+
+1. **Boxed grid（默认尝试）**：规则载体为 `line`、细 `rect` 或轴对齐细 `curve` hairline（部分生成器用 Bezier 细条画表框）。种子必须位于 caption 底缘之下并邻近 caption；沿共享行列坐标生长时以种子最高点为地板、以 `table_max_rule_span_pt` 为向下跨度上限，防止吸入同页其他元素。重建时先做 **主导格心蒸馏**：迭代地仅保留"行簇并集触及全列跨度、列簇并集触及全行跨度"的线，孤立页边刻线/装饰 hairline 因无连接证据而被排除（不是猜测结构，而是拒绝非承重证据）；cell 文本仍须与表区字符一一 accounting。
+2. **Rule-light / booktabs（boxed 失败后）**：caption 邻近窗口内最宽横线作种子，链接向下不超过 `table_light_max_row_gap_pt` 的等宽行线链（每簇须含 ≥55% 种子宽度的段），带内严禁任何竖直规则；列边界只从字符几何的全高空隙推断，尾部空行修剪、内部空行拒绝。任何不确定形状返回 `None`。
+
+两者的 payload 均写 `structure_style`（`"boxed"`/`"booktabs"`），且都要求零歧义、coverage ≥ 阈值才算 verified。声明优先级遵循阅读顺序：未解析表的规则证据在 Pass 1 插旗（stake boxes），figure cluster 不得吞并；被插旗对象参与后续 figure 证据选择时按对象级诚实拆分。多行单元格/竖跨与部分 span 表仍是已知限制，走 unresolved crop。
 
 #### Equation
 
-候选来自关系运算符、数学/斜体字体、baseline/script 变化、续行和右缘编号。已实现的受限空间解析器只有在每个 glyph 被主式、上下标或 exact `(<digits>)` 编号消费、括号平衡且无 visual overlap 时才写 verified LaTeX 并解除 gate；否则仍保留 raw text、完整 crop 和 unresolved。编号只来自独立源 refs，不让模型补编号。
+候选来自关系运算符、数学/斜体字体、baseline/script 变化、续行和右缘编号；含 `=` 的普通正文段落在加权 math/stix/symbol/italic 字体比率低于阈值时按 plain paragraph 处理，不产生 `PDF_EQUATION_UNRESOLVED` 误报。已实现的受限空间解析器只有在每个 glyph 被主式、上下标或 exact `(<digits>)` 编号消费、括号平衡且无 visual overlap 时才写 verified LaTeX 并解除 gate；否则仍保留 raw text、完整 crop 和 unresolved。编号只来自独立源 refs，不让模型补编号。
 
 #### Footnote
 

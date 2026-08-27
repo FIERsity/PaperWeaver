@@ -109,13 +109,16 @@ def recover_layout(
         consumed = _verified_table_chars(
             page, page_lines[page.page], document_tokens, artifact_keys, policy
         )
-        figure_chars, reserved_figure_refs = _verified_figure_chars(
+        figure_chars, claimed_visual_refs = _verified_figure_chars(
             page,
             page_lines[page.page],
             document_tokens,
             artifact_keys,
             content_clusters,
             policy,
+            _table_stake_boxes(
+                page, page_lines[page.page], document_tokens, artifact_keys, policy
+            ),
         )
         consumed.update(figure_chars)
         consumed.update(
@@ -198,7 +201,7 @@ def recover_layout(
             policy,
             len(blocks) + 1,
             content_clusters,
-            reserved_figure_refs,
+            claimed_visual_refs,
         )
         page_blocks: list[PdfBlock] = []
         for candidate in blocks[page_para_start:]:
@@ -835,7 +838,7 @@ def _classify_block(
         re.IGNORECASE,
     ):
         return "table_caption", "unresolved", ["PDF_TABLE_UNRESOLVED"]
-    if "=" in text and len(text) < 300:
+    if "=" in text and len(text) < 300 and _equation_like_paragraph(lines):
         return "paragraph", "unresolved", ["PDF_EQUATION_UNRESOLVED"]
     if ambiguous_hyphen:
         return "paragraph", "unresolved", ["PDF_DEHYPHENATION_AMBIGUOUS"]
@@ -857,6 +860,18 @@ def _classify_block(
     ):
         return "metadata", "ok", []
     return "paragraph", "ok", []
+
+
+def _equation_like_paragraph(lines: list[LayoutLine]) -> bool:
+    """Only typeset mathematics justifies flagging a leftover '=' paragraph."""
+    weighted = total = 0
+    for line in lines:
+        weight = max(len(line.raw_text), 1)
+        total += weight
+        font = line.fontname.casefold()
+        if any(mark in font for mark in ("italic", "math", "stix", "symbol")):
+            weighted += weight
+    return total > 0 and weighted / total >= 0.55
 
 
 def _likely_section_heading(text: str) -> bool:
@@ -1065,7 +1080,7 @@ def _build_elements(
     policy: dict[str, Any],
     ordinal_start: int,
     visual_clusters: list[pdf_visual.VisualCluster],
-    reserved_figure_refs: set[str],
+    claimed_visual_refs: set[str],
 ) -> tuple[
     list[PdfBlock],
     dict[int, PdfBlock],
@@ -1088,20 +1103,22 @@ def _build_elements(
         if block.kind == "table_caption":
             caption_bbox = block.provenance[0]["bbox"]
             table_objects = [
-                item for item in page_objects if item.object_ref not in reserved_figure_refs
+                item for item in page_objects if item.object_ref not in claimed_visual_refs
             ]
-            grid = pdf_table.reconstruct_grid(table_objects, caption_bbox, policy)
+            resolved = _resolve_table_structure(table_objects, caption_bbox, policy)
+            grid = resolved[0] if resolved else None
+            rules = resolved[1]
+            style = resolved[2]
             if grid is not None:
                 in_grid_chars = _chars_in_region(table_objects, grid, policy)
                 assignment = pdf_table.assign_chars_to_cells(in_grid_chars, grid, policy)
             else:
                 assignment = None
             if grid is not None and assignment is not None and pdf_table.verified(grid, assignment, policy):
-                rules = pdf_table._table_rules(table_objects, caption_bbox, policy)
                 refs = [item.object_ref for item in rules] + [
-                    item.object_ref for item in _chars_in_region(table_objects, grid, policy)
+                    item.object_ref for item in in_grid_chars
                 ]
-                payload = pdf_table.build_payload(grid, assignment)
+                payload = pdf_table.build_payload(grid, assignment, style=style)
                 rule_bboxes = [item.bbox for item in rules] or [caption_bbox]
                 line = _element_line(page, _union_bbox(rule_bboxes), "Table", refs)
                 element = replace(
@@ -1112,7 +1129,7 @@ def _build_elements(
                     table=payload,
                 )
                 # char accounting: in-grid chars move to the table block
-                for item in _chars_in_region(table_objects, grid, policy):
+                for item in in_grid_chars:
                     claims[item.object_ref] = ("rendered", element.block_id, None)
                 for item in rules:
                     claims[item.object_ref] = ("rendered", element.block_id, None)
@@ -1121,10 +1138,10 @@ def _build_elements(
                 ordinal += 1
                 updated[block.ordinal] = replace(block, status="ok", issues=[], disposition="render")
             else:
-                # Honest image fallback. If the table has a captured box (rules) we keep
-                # them as an unresolved visual placeholder; an unboxed table has no rules
-                # to claim, so the unresolved caption itself carries the incompleteness.
-                rules = pdf_table._table_rules(table_objects, caption_bbox, policy)
+                # Honest image fallback. When structure recovery found candidate rules
+                # (boxed or light) we keep them as an unresolved visual placeholder;
+                # a truly unruled table has no evidence to claim, so the unresolved
+                # caption itself carries the incompleteness.
                 if rules:
                     line = _element_line(
                         page,
@@ -1149,14 +1166,27 @@ def _build_elements(
                     )
         elif block.kind == "figure_caption":
             caption_bbox = block.provenance[0]["bbox"]
+            # Rule objects claimed by an unresolved-table placeholder follow
+            # reading-order priority and stay with the table; they must not make
+            # the whole neighboring visual cluster unavailable to this figure.
+            staked_rule_refs = {
+                object_ref
+                for object_ref, (disposition, _, _) in claims.items()
+                if disposition == "unresolved"
+            }
             selected = pdf_visual.figure_clusters(
                 visual_clusters,
                 caption_bbox,
-                set(claims),
+                set(claims) - staked_rule_refs,
                 max_gap=float(policy["table_region_gap_pt"]),
             )
-            visuals = [item for cluster in selected for item in cluster.objects]
-            region = _union_bbox([list(cluster.bbox) for cluster in selected]) if selected else None
+            visuals = [
+                item
+                for cluster in selected
+                for item in cluster.objects
+                if item.object_ref not in claims
+            ]
+            region = _union_bbox([list(item.bbox) for item in visuals]) if visuals else None
             label = _caption_label(block.text or "", "figure")
             if visuals and region:
                 # A concrete visual (embedded image or vector cluster) is capturable as an
@@ -1188,8 +1218,15 @@ def _verified_figure_chars(
     artifact_keys: set[str],
     visual_clusters: list[pdf_visual.VisualCluster],
     policy: dict[str, Any],
+    stake_boxes: list[list[float]],
 ) -> tuple[set[str], set[str]]:
-    """Return captured chart chars and visual refs from one caption decision."""
+    """Return captured chart chars and visual refs from one caption decision.
+
+    ``stake_boxes`` are rule-evidence regions staked out for table captions:
+    claim priority follows reading order, so figure clusters may not swallow a
+    nearby table's rule evidence even when that table will not promote and
+    falls back to an honest crop placeholder.
+    """
     artifact_lines = [
         line for line in lines if _artifact_key(page, line, policy) in artifact_keys
     ]
@@ -1198,6 +1235,7 @@ def _verified_figure_chars(
     paragraphs = _paragraphs(ordered)
     consumed: set[str] = set()
     claimed_visuals: set[str] = set()
+    tolerance = float(policy["table_cell_overlap_tolerance_pt"])
     for paragraph in paragraphs:
         text, ambiguous_hyphen = _join_paragraph_lines(paragraph, document_tokens)
         kind, _, _ = _classify_block(text, False, paragraph, ambiguous_hyphen)
@@ -1212,10 +1250,18 @@ def _verified_figure_chars(
         )
         if not selected:
             continue
-        claimed_visuals.update(
-            item.object_ref for cluster in selected for item in cluster.objects
-        )
-        region = _union_bbox([list(cluster.bbox) for cluster in selected])
+        kept = [
+            item
+            for cluster in selected
+            for item in cluster.objects
+            if not any(
+                _boxes_overlap(list(item.bbox), box, tolerance) for box in stake_boxes
+            )
+        ]
+        if not kept:
+            continue
+        claimed_visuals.update(item.object_ref for item in kept)
+        region = _union_bbox([list(item.bbox) for item in kept])
         consumed.update(
             item.object_ref
             for item in _chars_in_bbox(page.objects, region, policy)
@@ -1226,6 +1272,60 @@ def _verified_figure_chars(
     return consumed, claimed_visuals
 
 
+def _boxes_overlap(a: list[float], b: list[float], tolerance: float) -> bool:
+    return (
+        a[0] <= b[2] + tolerance
+        and b[0] <= a[2] + tolerance
+        and a[1] <= b[3] + tolerance
+        and b[1] <= a[3] + tolerance
+    )
+
+
+def _table_stake_boxes(
+    page: PdfPageObservation,
+    lines: list[LayoutLine],
+    document_tokens: set[str],
+    artifact_keys: set[str],
+    policy: dict[str, Any],
+) -> list[list[float]]:
+    """Union boxes of rule evidence beside each table caption on the page."""
+    artifact_lines = [line for line in lines if _artifact_key(page, line, policy) in artifact_keys]
+    content_lines = [line for line in lines if line not in artifact_lines]
+    ordered, _ = _reading_order(page, content_lines, policy)
+    boxes: list[list[float]] = []
+    for paragraph in _paragraphs(ordered):
+        text, ambiguous_hyphen = _join_paragraph_lines(paragraph, document_tokens)
+        kind, _, _ = _classify_block(text, False, paragraph, ambiguous_hyphen)
+        if kind != "table_caption":
+            continue
+        caption_bbox = _union_bbox([line.bbox for line in paragraph])
+        rules = pdf_table._table_rules(page.objects, caption_bbox, policy)
+        if rules:
+            boxes.append(_union_bbox([list(item.bbox) for item in rules]))
+    return boxes
+
+
+def _resolve_table_structure(
+    page_objects: list[RawPdfObject],
+    caption_bbox: list[float],
+    policy: dict[str, Any],
+) -> tuple[pdf_table.TableGrid | None, list[Any], str]:
+    """Decide once whether a captioned table promotes, in either supported style.
+
+    Returns ``(grid, rules, style)``; ``grid`` is ``None`` when nothing can be
+    promoted honestly, in which case ``rules`` still carries the boxed-path
+    heuristic rules for the fallback placeholder claim.
+    """
+    rules = pdf_table._table_rules(page_objects, caption_bbox, policy)
+    grid = pdf_table.reconstruct_grid(page_objects, caption_bbox, policy)
+    if grid is not None:
+        return grid, rules, "boxed"
+    plan = pdf_table.plan_light_grid(page_objects, caption_bbox, policy)
+    if plan is not None:
+        return plan.grid, list(plan.rules), "booktabs"
+    return None, rules, ""
+
+
 def _verified_table_chars(
     page: PdfPageObservation,
     lines: list[LayoutLine],
@@ -1233,7 +1333,7 @@ def _verified_table_chars(
     artifact_keys: set[str],
     policy: dict[str, Any],
 ) -> set[str]:
-    """Return char refs that belong to a verified (boxed, accounted) table.
+    """Return char refs that belong to a verified (structured, accounted) table.
 
     These characters are removed from the text layer so they are not rendered
     twice — once as body text and once as the structured table. Detection is a
@@ -1250,7 +1350,8 @@ def _verified_table_chars(
         if kind != "table_caption":
             continue
         caption_bbox = _union_bbox([line.bbox for line in paragraph])
-        grid = pdf_table.reconstruct_grid(page.objects, caption_bbox, policy)
+        resolved = _resolve_table_structure(page.objects, caption_bbox, policy)
+        grid = resolved[0] if resolved else None
         if grid is None:
             continue
         in_grid = _chars_in_region(page.objects, grid, policy)

@@ -345,9 +345,14 @@ def _validate_policy(policy: dict[str, Any]) -> None:
         "column_min_shared_lines",
         "column_gap_ratio",
         "rule_thickness_pt",
+        "table_max_rule_span_pt",
         "table_region_gap_pt",
         "table_edge_tolerance_pt",
         "table_cell_overlap_tolerance_pt",
+        "table_light_min_rule_width_pt",
+        "table_light_min_row_rule_ratio",
+        "table_light_column_gap_factor",
+        "table_light_max_row_gap_pt",
         "min_table_char_coverage",
     }
     if set(policy) != expected:
@@ -374,6 +379,10 @@ def _validate_policy(policy: dict[str, Any]) -> None:
         "table_region_gap_pt": (1.0, 1000.0),
         "table_edge_tolerance_pt": (0.1, 50.0),
         "table_cell_overlap_tolerance_pt": (0.1, 50.0),
+        "table_light_min_rule_width_pt": (1.0, 500.0),
+        "table_light_column_gap_factor": (0.05, 5.0),
+        "table_light_max_row_gap_pt": (5.0, 400.0),
+        "table_max_rule_span_pt": (50.0, 2000.0),
     }
     for name, (minimum, maximum) in limits.items():
         if not minimum <= policy[name] <= maximum:

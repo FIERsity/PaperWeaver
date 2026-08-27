@@ -22,8 +22,13 @@
   "column_min_shared_lines": 3,
   "column_gap_ratio": 0.05,
   "rule_thickness_pt": 1.0,
+  "table_max_rule_span_pt": 480.0,
   "table_region_gap_pt": 60.0,
   "table_edge_tolerance_pt": 1.0,
   "table_cell_overlap_tolerance_pt": 2.0,
+  "table_light_min_rule_width_pt": 36.0,
+  "table_light_min_row_rule_ratio": 0.55,
+  "table_light_column_gap_factor": 0.8,
+  "table_light_max_row_gap_pt": 72.0,
   "min_table_char_coverage": 0.98
 }

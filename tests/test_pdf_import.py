@@ -140,6 +140,8 @@ def _table_paper_pdf(
     *,
     boxed: bool = True,
     partial_vertical: bool = False,
+    horizontal_rules: bool = False,
+    booktabs: bool = False,
 ) -> None:
     """Draw a title, abstract, body, and a Table 1 (optionally boxed) on one page."""
     document = canvas.Canvas(str(path), pagesize=A4, invariant=True)
@@ -171,6 +173,18 @@ def _table_paper_pdf(
                 document.line(x_value, ys[1], x_value, ys[-1])
                 continue
             document.line(x_value, ys[0], x_value, ys[-1])
+    elif horizontal_rules:
+        # Full row separators but no vertical rules anywhere.
+        document.setLineWidth(0.8)
+        for y in ys:
+            document.line(xs[0], y, xs[-1], y)
+    elif booktabs:
+        # Classic three-rule style: top, header separator, bottom. The two data
+        # records share one unruled band on purpose (multi-line cell honesty).
+        document.setLineWidth(0.8)
+        document.line(xs[0], ys[0], xs[-1], ys[0])
+        document.line(xs[0], ys[1], xs[-1], ys[1])
+        document.line(xs[0], ys[-1], xs[-1], ys[-1])
     document.setFont("Times-Roman", 8)
     headers = ["Group", "Mean", "SD"][:columns]
     for index, header in enumerate(headers):
@@ -1347,3 +1361,83 @@ def test_partial_rule_table_is_honest_fallback(tmp_path: Path) -> None:
     assert any(
         "PDF_TABLE_UNRESOLVED" in block["issues"] for block in blocks if block["kind"] in {"table", "table_caption"}
     )
+
+
+def test_ruled_row_table_verifies_without_vertical_rules(tmp_path: Path) -> None:
+    """Horizontal row separators alone are enough to promote a table."""
+    source = tmp_path / "ruled-rows.pdf"
+    _table_paper_pdf(source, boxed=False, horizontal_rules=True)
+    project = _new_project(tmp_path)
+    import_paper(project, source)
+    blocks = _pdf_blocks(project)
+    table = next(block for block in blocks if block["kind"] == "table")
+    assert table["status"] == "ok"
+    assert table["table"]["structure_verified"] is True
+    assert table["table"]["structure_style"] == "booktabs"
+    assert table["table"]["rows"] == [
+        ["Group", "Mean", "SD"],
+        ["A", "4.2", "0.3"],
+        ["B", "5.1", "0.4"],
+    ]
+    article = _table_article(project)
+    assert "| Group | Mean | SD |" in article
+    assert "| A | 4.2 | 0.3 |" in article
+    assert "| B | 5.1 | 0.4 |" in article
+    qa = json.loads((project / "source" / "pdf" / "qa.json").read_text(encoding="utf-8"))
+    assert qa["status"] == "complete"
+    assert qa["metrics"]["verified_tables"] == 1
+
+
+def test_booktabs_records_collapse_into_multiline_cells(tmp_path: Path) -> None:
+    """Three-rule tables promote honestly; unruled records join inside cells."""
+    source = tmp_path / "booktabs.pdf"
+    _table_paper_pdf(source, boxed=False, booktabs=True)
+    project = _new_project(tmp_path)
+    import_paper(project, source)
+    blocks = _pdf_blocks(project)
+    table = next(block for block in blocks if block["kind"] == "table")
+    assert table["status"] == "ok"
+    assert table["table"]["rows"] == [
+        ["Group", "Mean", "SD"],
+        ["A\nB", "4.2\n5.1", "0.3\n0.4"],
+    ]
+    article = _table_article(project)
+    assert "| Group | Mean | SD |" in article
+    assert "| A<br>B | 4.2<br>5.1 | 0.3<br>0.4 |" in article
+    qa = json.loads((project / "source" / "pdf" / "qa.json").read_text(encoding="utf-8"))
+    assert qa["metrics"]["verified_tables"] == 1
+
+
+def _equals_prose_pdf(path: Path) -> None:
+    document = canvas.Canvas(str(path), pagesize=A4, invariant=True)
+    _, height = A4
+    document.setFont("Times-Bold", 18)
+    document.drawString(60, height - 60, "Equals Sign Prose Study")
+    document.setFont("Times-Roman", 10)
+    document.drawString(60, height - 90, "Abstract")
+    document.setFont("Times-Roman", 9)
+    lines = [
+        "This study reports prose statistics such as R2 = 0.99 across every cohort",
+        "and states loop bounds like k = 1,..., n for each simulated trajectory.",
+    ]
+    for index, value in enumerate(lines):
+        document.drawString(60, height - 118 - index * 14, value)
+    document.showPage()
+    document.save()
+
+
+def test_prose_with_equals_sign_is_not_flagged_as_unresolved_equation(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "prose.pdf"
+    _equals_prose_pdf(source)
+    project = _new_project(tmp_path)
+    import_paper(project, source)
+    qa = json.loads((project / "source" / "pdf" / "qa.json").read_text(encoding="utf-8"))
+    assert not any(
+        issue["code"] == "PDF_EQUATION_UNRESOLVED" for issue in qa["issues"]
+    )
+    blocks = _pdf_blocks(project)
+    prose = [block for block in blocks if "R2" in (block.get("text") or "")]
+    assert prose
+    assert all(block["status"] == "ok" for block in prose)
