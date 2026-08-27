@@ -124,6 +124,9 @@ def _render_block(
         return _render_table(block, slots, slot_values)
     if block.kind == "figure":
         return _render_figure(block, asset_paths)
+    if block.kind == "reference":
+        entries = _reference_entries(text)
+        return [value for entry in entries for value in (entry, "")][:-1]
     return [text]
 
 
@@ -228,6 +231,14 @@ def _heading_level(text: str) -> int:
         return 2
     match = re.match(r"^(\d+(?:\.\d+)*)\.?\s+", text)
     return min(2 + match.group(1).count("."), 6) if match else 2
+
+
+def _reference_entries(text: str) -> list[str]:
+    boundary = re.compile(
+        r"(?<=[^,&] )(?=(?:[A-Za-z][A-Za-z-]*, [A-Z]\.|[A-Z][A-Za-z0-9-]+\. \((?:cited|\d{4})))"
+    )
+    entries = [item.strip() for item in boundary.split(text) if item.strip()]
+    return entries or [text]
 
 
 def _node_type(block: PdfBlock) -> str:

@@ -18,7 +18,7 @@ from paperweaver.cli import run
 from paperweaver.core import import_paper, init_project
 from paperweaver.pdf_backend_pdfplumber import _recover_unmapped_glyph
 from paperweaver.pdf_contracts import default_policy
-from paperweaver.pdf_markdown import _html_table, _pipe_table
+from paperweaver.pdf_markdown import _html_table, _pipe_table, _reference_entries
 from paperweaver.pdf_table import TableGrid, _table_rules, assign_chars_to_cells, verified
 from paperweaver.publication import render_translation_pdf
 from paperweaver.translation import (
@@ -1190,6 +1190,19 @@ def test_table_rendering_escapes_structure_and_preserves_line_breaks() -> None:
     rendered = "\n".join(html_rows)
     assert "&lt;script&gt;" in rendered
     assert "line 1<br>line 2" in rendered
+
+
+def test_reference_entries_split_author_and_corporate_citations() -> None:
+    text = (
+        "Martinez, R., Michaud, B. (2020). First reference. "
+        "Musmann, F., Sasso, A. (2020). Second reference. "
+        "SensiML. (cited Jan 2022). Corporate reference."
+    )
+    assert _reference_entries(text) == [
+        "Martinez, R., Michaud, B. (2020). First reference.",
+        "Musmann, F., Sasso, A. (2020). Second reference.",
+        "SensiML. (cited Jan 2022). Corporate reference.",
+    ]
 
 
 def test_visual_clusters_bind_to_each_caption_without_chart_text_passages(
