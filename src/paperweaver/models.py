@@ -116,6 +116,26 @@ class TranslationRecord(Record):
 
 
 @dataclass(frozen=True)
+class AuditProposal(Record):
+    """One validated model repair proposal; append-only, never applied silently."""
+
+    proposal_id: str
+    work_order_id: str
+    block_id: str
+    type: str
+    source_sha256: str
+    run_id: str
+    payload: dict[str, Any]
+    adapter: str
+    model: str
+    revision: int
+    supersedes: str | None
+    status: str
+    validation: dict[str, Any]
+    created_at: str
+
+
+@dataclass(frozen=True)
 class ChineseSummaryRecord(Record):
     """A reviewable Chinese whole-paper summary, separate from source and translation records."""
 

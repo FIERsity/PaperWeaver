@@ -69,7 +69,7 @@ def detect_equations(page_objects: list[Any], page_width: float) -> list[Equatio
         latex_rows = [_latex_row(row, base_size) for row in rows]
         latex = " ".join(value for value in latex_rows if value) if all(latex_rows) else ""
         refs = _unique(body + number_chars)
-        verified = bool(latex) and _balanced(latex) and not any(
+        verified = bool(latex) and latex_balanced(latex) and not any(
             re.fullmatch(r"\(cid:\d+\)", item.payload) for item in refs
         )
         bbox = _union_bbox([item.bbox for item in refs])
@@ -122,7 +122,7 @@ def _continuation_y(
 
 def _latex_row(chars: list[Any], base_size: float) -> str | None:
     ordered = sorted(_unique(chars), key=lambda item: (item.bbox[0], item.bbox[1]))
-    converted = {item.object_ref: _latex_char(item.payload) for item in ordered}
+    converted = {item.object_ref: latex_char(item.payload) for item in ordered}
     if any(value is None for value in converted.values()):
         return None
     scripts = [item for item in ordered if float(item.attrs.get("size", 0.0)) < base_size * 0.78]
@@ -160,7 +160,7 @@ def _latex_row(chars: list[Any], base_size: float) -> str | None:
     return re.sub(r"\s+", " ", output).strip()
 
 
-def _latex_char(value: str) -> str | None:
+def latex_char(value: str) -> str | None:
     mapped = {
         "α": r"\alpha",
         "β": r"\beta",
@@ -234,7 +234,7 @@ def _center_y(item: Any) -> float:
     return (item.bbox[1] + item.bbox[3]) / 2
 
 
-def _balanced(value: str) -> bool:
+def latex_balanced(value: str) -> bool:
     stack: list[str] = []
     pairs = {")": "(", "]": "[", "}": "{"}
     for character in value:

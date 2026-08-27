@@ -7,6 +7,7 @@ import json
 import logging
 from pathlib import Path
 
+from .audit import audit_status, export_audit_package, import_audit_proposals, verify_audit_draft
 from .core import import_paper, init_project
 from .pdf_contracts import PdfUnsupportedError, pdf_status
 from .publication import render_translation_pdf
@@ -65,6 +66,26 @@ def parser() -> argparse.ArgumentParser:
     status.add_argument("--json", action="store_true")
     pdf_validate = commands.add_parser("pdf-validate", help="Apply the PDF import completion gate")
     pdf_validate.add_argument("project", type=Path)
+    audit_export = commands.add_parser(
+        "audit-export", help="Export unresolved-block work orders for model audit"
+    )
+    audit_export.add_argument("project", type=Path)
+    audit_imported = commands.add_parser(
+        "audit-import", help="Validate and append model repair proposals"
+    )
+    audit_imported.add_argument("project", type=Path)
+    audit_imported.add_argument("draft", type=Path)
+    audit_imported.add_argument("--adapter", default="paper-agent")
+    audit_imported.add_argument("--model", required=True)
+    verify_draft = commands.add_parser(
+        "verify-draft", help="Validate an audit draft without writing any state"
+    )
+    verify_draft.add_argument("project", type=Path)
+    verify_draft.add_argument("draft", type=Path)
+    audit_status_cmd = commands.add_parser(
+        "audit-status", help="Show repair burn-down over unresolved blocks"
+    )
+    audit_status_cmd.add_argument("project", type=Path)
     return root
 
 
@@ -97,6 +118,21 @@ def run(arguments: list[str] | None = None) -> int:
         import_chinese_summary(args.project, args.draft, args.adapter, args.model)
     elif args.command == "export-summary":
         export_chinese_summary(args.project)
+    elif args.command == "audit-export":
+        print(export_audit_package(args.project))
+    elif args.command == "audit-import":
+        accepted, rejected = import_audit_proposals(args.project, args.draft, args.adapter, args.model)
+        print(f"accepted={accepted} rejected={rejected}")
+    elif args.command == "verify-draft":
+        proposals = verify_audit_draft(args.project, args.draft)
+        for number, proposal in enumerate(proposals, 1):
+            verdict = f"{number} {proposal.status} {proposal.work_order_id}"
+            reasons = proposal.validation.get("reject_reasons", [])
+            print(verdict + (f" :: {'; '.join(reasons)}" if reasons else ""))
+        if any(proposal.status == "rejected" for proposal in proposals):
+            return 1
+    elif args.command == "audit-status":
+        print(json.dumps(audit_status(args.project), ensure_ascii=False, indent=2))
     elif args.command == "pdf-status":
         pdf_status(args.project)
         manifest = json.loads(

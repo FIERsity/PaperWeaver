@@ -52,6 +52,17 @@ paperweaver pdf-validate my-paper
 paperweaver segment my-paper  # accepted only when PDF status is complete
 ```
 
+Unresolved tables and equations can be handed to a model for evidence-bound repair:
+
+```bash
+paperweaver audit-export my-paper                        # output/audit-package.json
+paperweaver verify-draft my-paper draft.jsonl            # self-check, writes nothing
+paperweaver audit-import my-paper draft.jsonl --model my-model
+paperweaver audit-status my-paper                        # burn-down and acceptance rate
+```
+
+Proposals never carry content text: a table proposal contributes only grid geometry whose cells the engine rebuilds from the PDF's own characters, and an equation proposal must have every region glyph consumed by balanced, cid-free LaTeX. Every submission is appended to the state ledger with its validation verdict.
+
 `import` returns 0 for complete, 2 for incomplete, and 3 for a valid PDF outside the active born-digital policy. A fatal parse/backend error returns 1 and does not commit a PDF source.
 
 `translations.jsonl` must contain one JSON object per source Passage:

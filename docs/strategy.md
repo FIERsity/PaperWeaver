@@ -44,7 +44,7 @@ PDF → [确定性引擎] → 规整 Markdown（已解决部分）
 - 有界重试：拒绝时返回机器可读的结构化拒因，最多一次重试，再失败保持 unresolved
   留给人；
 - append-only overlay：每条记录可追溯、可回滚；LLM 永远不直接改内容，只追加提案；
-- 计划中的 CLI 面：`audit-export` / `audit-import` / `verify-draft`。
+- CLI 面：`audit-export` / `audit-import` / `verify-draft` / `audit-status`（已落地）。
 
 引擎单独就有独立价值（诚实的不完整导入 + 审计包）；skill 是放大器，不是依赖。
 
@@ -78,9 +78,10 @@ PDF → [确定性引擎] → 规整 Markdown（已解决部分）
 ## 6. 路线顺序
 
 1. ~~度量口径 v2 + floors/targets 分离 + check.sh + CI 闭环~~（已完成，2026-08-27）
-2. audit package 契约 + `audit-export` / `audit-import` / `verify-draft` CLI；
-3. `paperweaver-audit` skill MVP，首批真实工单 = 语料中 36 处无框/跨页表 + 1 处
-   未决公式，跑通"提案 → 复检 → 合并 → burn-down"闭环；
+2. ~~audit package 契约 + `audit-export` / `audit-import` / `verify-draft` CLI~~（已完成，2026-08-27；工作单导出、确定性提案复检、append-only 提案账本、burn-down 均已落地）；
+3. `paperweaver-audit` skill MVP + 已接受提案向 `article.md`/render-tree 的确定性
+   物化，首批真实工单 = 语料中无框/跨页表与未决公式，跑通"提案 → 复检 → 物化 →
+   burn-down"闭环；
 4. 引擎确定性战线按 ROI 继续：无框表（acl-tables-2024×18、warwick×9）→ 标题层级
    → 断词/跨页续段；一次只开一条结构战线，每条战线 = policy 参数 + 合成 fixture +
    真实语料对照 + design doc 章节；

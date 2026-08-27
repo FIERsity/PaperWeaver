@@ -1193,7 +1193,7 @@ def _build_elements(
                 # asset with a bbox; only a caption with no visual stays unresolved.
                 figure_chars = [
                     item
-                    for item in _chars_in_bbox(page_objects, region, policy)
+                    for item in chars_in_bbox(page_objects, region, policy)
                     if item.object_ref not in block.source_object_refs
                 ]
                 refs = [item.object_ref for item in visuals + figure_chars]
@@ -1264,7 +1264,7 @@ def _verified_figure_chars(
         region = _union_bbox([list(item.bbox) for item in kept])
         consumed.update(
             item.object_ref
-            for item in _chars_in_bbox(page.objects, region, policy)
+            for item in chars_in_bbox(page.objects, region, policy)
             if item.object_ref not in {
                 object_ref for line in paragraph for object_ref in line.object_refs
             }
@@ -1379,7 +1379,7 @@ def _chars_in_region(
     ]
 
 
-def _chars_in_bbox(
+def chars_in_bbox(
     page_objects: list[RawPdfObject], bbox: list[float], policy: dict[str, Any]
 ) -> list[RawPdfObject]:
     tolerance = float(policy["table_cell_overlap_tolerance_pt"])
