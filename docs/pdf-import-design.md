@@ -1,10 +1,10 @@
 # PaperWeaver 期刊 PDF → 规整 Markdown 导入设计
 
-状态：已批准；P0 安全地基、P1a、P2 结构 plumbing 与 P3 确定性公式核心已实现；P1 真实语料语义验收、P3 Agent repair、P4 OCR engine、P5 可选后端待收口  
-目标版本：v0.5+，分期交付  
-最后复核：2026-08-25  
+状态：已批准；P0 安全地基、P1a/P1 分带阅读顺序与真实语料回归门禁、P2 结构 plumbing、P3 确定性公式核心已实现；P3 Agent repair、P4 OCR engine、P5 可选后端待收口
+目标版本：v0.5+，分期交付
+最后复核：2026-08-27
 
-P1a 实现了不可变原件、稳定 run/block/object 身份、带摘要的字符/块/关系/对象账本、局部一/二栏文本顺序、重复页眉页码排除、逐页可见 ink component QA、规整审阅 Markdown、完整性门禁和 Passage provenance。P2 已实现 cluster-first figure asset、caption 分块与显式 `caption_of` 关系、闭合有框表验证、table-cell Passage、passage-slot map、render-tree 译文回填、asset 复制与 A4 表格渲染；无框/span 表和 captionless/歧义图簇仍走诚实 bbox crop。P3 确定性核心已能把文本层主行、下标、续行及右侧编号一一归属并生成 verified LaTeX/crop；复杂、位图、混合对象或含未支持 TeX glyph 的公式保持 unresolved。P1 的 shortest-edit JATS 语义门禁和真实 complete corpus 仍待收口；QA 现输出 OCR page/block candidates，但 P4 OCR 引擎和 append-only supplement run 尚未实现。
+P1 实现了不可变原件、稳定 run/block/object 身份、带摘要的字符/块/关系/对象账本、跨栏块分带的一/二栏文本顺序、重复文本/视觉页眉页码排除、逐页可见 ink component QA、规整审阅 Markdown、完整性门禁和 Passage provenance。4 组 PLOS PDF/JATS 对已有 exact LCS/shortest-edit regression minima，JOSS 已作为首篇真实 `complete → segment → translation → Markdown/PDF export` golden。P2 已实现 cluster-first figure asset、caption 分块与显式 `caption_of` 关系、闭合有框表验证、table-cell Passage、passage-slot map、render-tree 译文回填、asset 复制与 A4 表格渲染；无框/span 表和 captionless/歧义图簇仍走诚实 bbox crop。P3 确定性核心已能把文本层主行、下标、续行及右侧编号一一归属并生成 verified LaTeX/crop；复杂、位图、混合对象或含未支持 TeX glyph 的公式保持 unresolved。正式 99.5%/99% PLOS 语义验收仍须继续提高；QA 现输出 OCR page/block candidates，但 P4 OCR 引擎和 append-only supplement run 尚未实现。
 
 ## 0. 摘要与最终拍板
 
@@ -1357,9 +1357,10 @@ P0 必须提交并评审 `tests/corpus/pdf-jats-manifest.json`，至少固定 3 
 
 当前仓库已落地该 manifest 及显式 bootstrap/batch runner：首批 12 篇开放论文包含
 4 组 PLOS PDF/JATS 对、旧双栏、表格/公式/图片密集论文和公版扫描件；原文 bytes 与
-批跑 workspace 只进入被忽略的 `tmp/corpus-cache` / `tmp/corpus-runs`。当前 token
-multiset 指标仅用于诊断且明确标记为 non-gating；本节规定的 shortest-edit alignment
-与人工差异审批仍是后续 semantic-diff gate，不能用诊断指标冒充验收。
+批跑 workspace 只进入被忽略的 `tmp/corpus-cache` / `tmp/corpus-runs`。runner 已按
+JATS body 与 PDF body blocks 计算 exact LCS/shortest-edit token recall、precision 与
+order ratio，并用 manifest 中评审过的逐篇 minimum 阻止回退。当前 minimum 只是已测
+baseline；仍须通过版式恢复把它提高到下述正式验收线，不能把低 baseline 冒充 P1 完成。
 
 P1 的文本指标直接拍板为：对 JATS/PDF 双方去除已标注 artifact，Unicode NFC、只展开规范允许的排版 ligature、collapse whitespace；tokenizer 按 Unicode letter/mark 连续串、数字连续串、单个 CJK 字符、单个数学/标点符号切 token。以 JATS body token 序列为 reference，按最短编辑对齐计算 token recall 与 precision，二者每篇都须 ≥99.5%；LCS order ratio 须 ≥99.0%；figure/table/equation/reference label recall 必须 100%。预先批准的“期刊 PDF 与 JATS 实际版本差异”从两边同位置剔除并在 manifest 留证，不能在测试失败后临时扩大 exclusion。
 

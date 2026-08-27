@@ -13,6 +13,7 @@ from scripts.pdf_corpus import (
     cached_path,
     diagnostic_tokens,
     fetch_file,
+    lcs_length,
     load_manifest,
     render_report_markdown,
     run_paper,
@@ -96,14 +97,20 @@ def test_fetch_is_atomic_and_reuses_verified_cache(tmp_path: Path, monkeypatch) 
     assert not list(path.parent.glob(".download-*"))
 
 
-def test_multilingual_token_diagnostic_is_explicitly_non_gating() -> None:
+def test_multilingual_token_alignment_is_an_explicit_gate() -> None:
     reference = diagnostic_tokens("中文 ﬁgure 12.5")
     candidate = diagnostic_tokens("中文 figure 12.5 extra")
     assert reference == ["中", "文", "figure", "12", ".", "5"]
     result = token_diagnostics(reference, candidate)
     assert result["recall"] == 1.0
     assert result["precision"] < 1.0
-    assert result["gating"] is False
+    assert result["order_ratio"] == 1.0
+    assert result["gating"] is True
+
+
+def test_lcs_alignment_measures_order_without_quadratic_matrix() -> None:
+    assert lcs_length(["a", "b", "c", "d"], ["a", "c", "b", "d"]) == 3
+    assert lcs_length(["中", "文", "a"], ["文", "中", "a"]) == 2
 
 
 def test_report_is_stably_ordered_and_surfaces_errors(monkeypatch) -> None:
@@ -119,6 +126,8 @@ def test_report_is_stably_ordered_and_surfaces_errors(monkeypatch) -> None:
             "status": "incomplete",
             "duration_seconds": 1.25,
             "error": None,
+            "semantic_gate": None,
+            "status_gate": None,
             "metrics": {"pages": 5, "verified_figures": 1, "verified_tables": 0, "verified_equations": 0, "unresolved_blocks": 2},
         },
         {
@@ -126,6 +135,8 @@ def test_report_is_stably_ordered_and_surfaces_errors(monkeypatch) -> None:
             "status": "fatal",
             "duration_seconds": 0.5,
             "error": "ValueError: test",
+            "semantic_gate": None,
+            "status_gate": None,
             "metrics": {},
         },
     ]
@@ -154,3 +165,22 @@ def test_cached_real_paper_import(tmp_path: Path) -> None:
     assert result["idempotent"] is True
     assert result["status"] in {"complete", "complete_with_warnings", "incomplete", "unsupported"}
     assert result["metrics"]["source_object_accounting_ratio"] == 1.0
+    if paper["expected"]["required_status"] == "complete":
+        from paperweaver.publication import render_translation_pdf
+        from paperweaver.translation import (
+            MockTranslationAdapter,
+            export_translated_markdown,
+            segment_paper,
+            translate_paper,
+        )
+
+        assert result["status"] in {"complete", "complete_with_warnings"}
+        project = tmp_path / "run" / "projects" / paper_id
+        passages, _ = segment_paper(project, unit_size=2)
+        passage_ids = [item.id for item in passages]
+        assert [item.id for item in segment_paper(project, unit_size=2)[0]] == passage_ids
+        translate_paper(project, MockTranslationAdapter())
+        markdown = export_translated_markdown(project)
+        rendered = render_translation_pdf(markdown)
+        assert rendered.read_bytes().startswith(b"%PDF")
+        assert len(list((project / "output" / "assets").glob("*.png"))) == 4

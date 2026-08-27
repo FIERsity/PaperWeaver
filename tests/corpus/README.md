@@ -26,11 +26,14 @@ with different bytes are rejected. The scripts never refresh checksums or overwr
 run.
 
 The PLOS JATS files are immutable comparison oracles. Their element counts are checked before
-each run, but their text never fills gaps in PDF extraction. Current token overlap metrics are
-diagnostic and explicitly non-gating; they are not the 99.5% shortest-edit-alignment gate
-specified for a future full PDF/JATS semantic-diff harness. The scheduled corpus workflow is
-likewise diagnostic until that gate and reviewed per-paper baselines are committed: it fails on
-fatal execution errors, not on every status or structure-count change.
+each run, but their text never fills gaps in PDF extraction. The runner compares JATS body tokens
+with PDF body blocks using an exact bit-parallel LCS/shortest-edit alignment. Reviewed per-paper
+minimum recall, precision, and order ratios are regression gates: a drop makes the run and the
+scheduled corpus workflow fail. These initial minima preserve the measured baseline; the design
+target remains at least 99.5% recall/precision and 99% order as layout recovery improves.
+The manifest can also require a completion status. `joss-04061` currently must remain complete;
+its opt-in pytest path additionally segments, mock-translates, copies all four figures, and renders
+the translated A4 PDF.
 
 Default `pytest` remains offline and uses synthetic fixtures. To exercise a locally cached real
 paper explicitly, set `PAPERWEAVER_RUN_CORPUS=1` and optionally

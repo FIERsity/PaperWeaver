@@ -30,6 +30,8 @@
       },
       "expected": {
         "jats_elements": {"figures": 2, "tables": 4, "equations": 0, "references": 29},
+        "semantic_minimums": {"recall": 0.9, "precision": 0.85, "order_ratio": 0.9},
+        "required_status": null,
         "approved_differences": []
       }
     },
@@ -60,6 +62,8 @@
       },
       "expected": {
         "jats_elements": {"figures": 4, "tables": 1, "equations": 11, "references": 67},
+        "semantic_minimums": {"recall": 0.85, "precision": 0.85, "order_ratio": 0.9},
+        "required_status": null,
         "approved_differences": []
       }
     },
@@ -90,6 +94,8 @@
       },
       "expected": {
         "jats_elements": {"figures": 7, "tables": 2, "equations": 13, "references": 85},
+        "semantic_minimums": {"recall": 0.59, "precision": 0.5, "order_ratio": 0.6},
+        "required_status": null,
         "approved_differences": []
       }
     },
@@ -120,6 +126,8 @@
       },
       "expected": {
         "jats_elements": {"figures": 5, "tables": 7, "equations": 2, "references": 105},
+        "semantic_minimums": {"recall": 0.81, "precision": 0.81, "order_ratio": 0.83},
+        "required_status": null,
         "approved_differences": []
       }
     },
@@ -143,7 +151,7 @@
           "page_count": 20
         }
       },
-      "expected": {"jats_elements": {}, "approved_differences": []}
+      "expected": {"jats_elements": {}, "semantic_minimums": null, "required_status": null, "approved_differences": []}
     },
     {
       "id": "joss-04061",
@@ -165,7 +173,7 @@
           "page_count": 5
         }
       },
-      "expected": {"jats_elements": {}, "approved_differences": []}
+      "expected": {"jats_elements": {}, "semantic_minimums": null, "required_status": "complete", "approved_differences": []}
     },
     {
       "id": "frontiers-ketogenic-2022",
@@ -187,7 +195,7 @@
           "page_count": 11
         }
       },
-      "expected": {"jats_elements": {}, "approved_differences": []}
+      "expected": {"jats_elements": {}, "semantic_minimums": null, "required_status": null, "approved_differences": []}
     },
     {
       "id": "nlm-rupture-uterus-1879",
@@ -209,7 +217,7 @@
           "page_count": 16
         }
       },
-      "expected": {"jats_elements": {}, "approved_differences": []}
+      "expected": {"jats_elements": {}, "semantic_minimums": null, "required_status": null, "approved_differences": []}
     },
     {
       "id": "nougat-2308-13418",
@@ -231,7 +239,7 @@
           "page_count": 17
         }
       },
-      "expected": {"jats_elements": {}, "approved_differences": []}
+      "expected": {"jats_elements": {}, "semantic_minimums": null, "required_status": null, "approved_differences": []}
     },
     {
       "id": "layoutparser-2103-15348",
@@ -253,7 +261,7 @@
           "page_count": 16
         }
       },
-      "expected": {"jats_elements": {}, "approved_differences": []}
+      "expected": {"jats_elements": {}, "semantic_minimums": null, "required_status": null, "approved_differences": []}
     },
     {
       "id": "nasa-aircraft-1967",
@@ -275,7 +283,7 @@
           "page_count": 156
         }
       },
-      "expected": {"jats_elements": {}, "approved_differences": []}
+      "expected": {"jats_elements": {}, "semantic_minimums": null, "required_status": null, "approved_differences": []}
     },
     {
       "id": "warwick-prom-tables-2025",
@@ -297,7 +305,7 @@
           "page_count": 11
         }
       },
-      "expected": {"jats_elements": {}, "approved_differences": []}
+      "expected": {"jats_elements": {}, "semantic_minimums": null, "required_status": null, "approved_differences": []}
     }
   ]
 }

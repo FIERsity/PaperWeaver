@@ -12,7 +12,7 @@ The export contract recognizes JATS source markers for figures and tables rather
 
 PDF import keeps `source/original.pdf` as the immutable evidence source. A versioned pdfplumber run records every located character, image occurrence, line, rectangle, curve, and annotation in `source/pdf/runs/<run_id>/raw-objects.jsonl`. Canonical blocks and an object-accounting ledger derive from those observations; `source/article.md` is only a deterministic view. Stable HTML comments connect Markdown blocks to `article-map.jsonl`, page/bbox provenance, and later Passages.
 
-`source/pdf/qa.json` is the PDF completion authority. The current born-digital policy validates Unicode coverage, page rotation, one/two-column explainability, visible raster ink coverage, source-object accounting, local assets, and unresolved blocks. `segment` refuses every PDF whose manifest is not `complete` or `complete_with_warnings`. This permits a readable incomplete review artifact without allowing placeholders or guessed glyphs into translations and summaries.
+`source/pdf/qa.json` is the PDF completion authority. The current born-digital policy validates Unicode coverage, page rotation, band-aware one/two-column explainability, visible raster ink coverage, source-object accounting, local assets, and unresolved blocks. Full-width headings and captions split local column bands instead of forcing a whole page into a false three-column classification. `segment` refuses every PDF whose manifest is not `complete` or `complete_with_warnings`. This permits a readable incomplete review artifact without allowing placeholders or guessed glyphs into translations and summaries.
 
 The current PDF slice includes P2 structural plumbing and the deterministic part of P3. Visual primitives are clustered before decoration filtering; caption-bounded clusters become content-addressed `figure` blocks, selectable chart labels become structural evidence rather than translation Passages, and unmatched clusters remain individual unresolved crops. Boxed tables are verified from a closed rule grid with one-to-one cell character accounting. Their textual cells become stable render-tree slots and Passages, while numeric/symbol cells remain literal; translated Markdown and A4 PDF are rebuilt from those slots rather than from model-controlled table syntax.
 
@@ -25,3 +25,6 @@ differences. Network bootstrap writes only to ignored `tmp/corpus-cache/`; batch
 new timestamped workspaces and aggregate reports under `tmp/corpus-runs/`. A changed source
 digest is rejected rather than silently accepted. Default tests remain offline and synthetic,
 while opt-in corpus runs preserve the complete per-paper evidence ledger for diagnosis.
+PLOS PDF/JATS pairs are additionally compared with exact LCS/shortest-edit token alignment;
+reviewed recall, precision, and order minima make corpus regressions fail CI. The JOSS paper is
+also held to a `complete` status gate and an opt-in end-to-end segment/translation/export test.

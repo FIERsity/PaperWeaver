@@ -24,7 +24,10 @@ def materialize_markdown(
     rendered_title = False
     ordered = sorted(blocks, key=lambda item: item.ordinal)
     titles = [item for item in ordered if item.kind == "document_title"]
-    ordered = titles[:1] + [item for item in ordered if item not in titles[:1]]
+    metadata = [item for item in ordered if item.kind == "metadata"]
+    ordered = titles[:1] + metadata + [
+        item for item in ordered if item not in titles[:1] and item not in metadata
+    ]
     for block in ordered:
         if block.disposition == "excluded_artifact":
             continue
@@ -272,6 +275,7 @@ def _slots_for_block(
         "equation",
         "reference",
         "figure",
+        "metadata",
         "document_title",
         "section_heading",
     }

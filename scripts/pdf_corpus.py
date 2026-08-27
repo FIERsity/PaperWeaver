@@ -45,8 +45,14 @@ PAPER_KEYS = {
 }
 LICENSE_KEYS = {"identifier", "url", "evidence_url"}
 FILE_KEYS = {"url", "sha256", "size_bytes", "page_count"}
-EXPECTED_KEYS = {"jats_elements", "approved_differences"}
+EXPECTED_KEYS = {
+    "jats_elements",
+    "semantic_minimums",
+    "required_status",
+    "approved_differences",
+}
 JATS_ELEMENT_KEYS = {"figures", "tables", "equations", "references"}
+SEMANTIC_KEYS = {"recall", "precision", "order_ratio"}
 
 
 class CorpusError(RuntimeError):
@@ -115,6 +121,16 @@ def _validate_paper(paper: dict[str, Any]) -> None:
         for value in expected["approved_differences"]
     ):
         raise CorpusError(f"CORPUS_MANIFEST_INVALID: {paper['id']} differences are invalid")
+    minimums = expected["semantic_minimums"]
+    if "jats" in files:
+        if not isinstance(minimums, dict) or set(minimums) != SEMANTIC_KEYS:
+            raise CorpusError(f"CORPUS_MANIFEST_INVALID: {paper['id']} semantic gate is missing")
+        if any(not isinstance(value, (int, float)) or not 0 <= value <= 1 for value in minimums.values()):
+            raise CorpusError(f"CORPUS_MANIFEST_INVALID: {paper['id']} semantic gate is invalid")
+    elif minimums is not None:
+        raise CorpusError(f"CORPUS_MANIFEST_INVALID: {paper['id']} has no JATS semantic oracle")
+    if expected["required_status"] not in {None, "complete"}:
+        raise CorpusError(f"CORPUS_MANIFEST_INVALID: {paper['id']} status gate is invalid")
 
 
 def _validate_file_spec(paper_id: str, kind: str, spec: dict[str, Any]) -> None:
@@ -279,15 +295,31 @@ def diagnostic_tokens(text: str) -> list[str]:
 
 def token_diagnostics(reference: list[str], candidate: list[str]) -> dict[str, Any]:
     overlap = sum((Counter(reference) & Counter(candidate)).values())
+    ordered = lcs_length(reference, candidate)
     return {
-        "method": "unicode-token-multiset-diagnostic-v1",
+        "method": "unicode-token-shortest-edit-v1",
         "reference_tokens": len(reference),
         "candidate_tokens": len(candidate),
-        "overlap_tokens": overlap,
-        "recall": overlap / len(reference) if reference else 1.0,
-        "precision": overlap / len(candidate) if candidate else 1.0,
-        "gating": False,
+        "multiset_overlap_tokens": overlap,
+        "aligned_tokens": ordered,
+        "recall": ordered / len(reference) if reference else 1.0,
+        "precision": ordered / len(candidate) if candidate else 1.0,
+        "order_ratio": ordered / overlap if overlap else 1.0,
+        "gating": True,
     }
+
+
+def lcs_length(reference: list[str], candidate: list[str]) -> int:
+    """Return exact LCS length using a deterministic bit-parallel algorithm."""
+    positions: dict[str, int] = {}
+    for index, token in enumerate(candidate):
+        positions[token] = positions.get(token, 0) | (1 << index)
+    state = 0
+    for token in reference:
+        matches = positions.get(token, 0)
+        update = state | matches
+        state = update & ~(update - ((state << 1) | 1))
+    return state.bit_count()
 
 
 def _is_cjk(character: str) -> bool:
@@ -306,12 +338,40 @@ def _jats_body_text(path: Path) -> str:
     return " ".join(body.itertext()) if body is not None else ""
 
 
-def _article_text(path: Path) -> str:
-    text = path.read_text(encoding="utf-8")
-    text = re.sub(r"<!--.*?-->", " ", text, flags=re.DOTALL)
-    text = re.sub(r"!\[[^]]*]\([^)]*\)", " ", text)
-    text = re.sub(r"<[^>]+>", " ", text)
-    return re.sub(r"[#|`*_\\$]+", " ", text)
+def _pdf_body_text(project: Path) -> str:
+    manifest = json.loads(
+        (project / "source" / "pdf" / "manifest.json").read_text(encoding="utf-8")
+    )
+    blocks_path = (
+        project
+        / "source"
+        / "pdf"
+        / "runs"
+        / manifest["active_run_id"]
+        / "base-blocks.jsonl"
+    )
+    blocks = [json.loads(line) for line in blocks_path.read_text(encoding="utf-8").splitlines()]
+    lines: list[str] = []
+    in_body = False
+    stop_headings = {"acknowledgments", "acknowledgements", "references"}
+    for block in blocks:
+        kind = block["kind"]
+        text = (block.get("text") or "").strip()
+        if kind == "section_heading":
+            heading = text.casefold()
+            if heading == "introduction":
+                in_body = True
+            elif in_body and heading in stop_headings:
+                break
+        if not in_body:
+            continue
+        if kind in {"section_heading", "paragraph", "figure_caption", "table_caption"}:
+            lines.append(text)
+        elif kind == "equation":
+            lines.append((block.get("raw_text") or text).strip())
+        elif kind == "table" and block["status"] == "ok" and block.get("table"):
+            lines.extend(" ".join(row) for row in block["table"]["rows"])
+    return "\n".join(value for value in lines if value)
 
 
 def environment_record() -> dict[str, Any]:
@@ -348,6 +408,8 @@ def run_paper(paper: dict[str, Any], cache_root: Path, run_root: Path) -> dict[s
         "issue_codes": {},
         "jats_elements": paper["expected"]["jats_elements"],
         "token_diagnostics": None,
+        "semantic_gate": None,
+        "status_gate": None,
         "idempotent": False,
     }
     try:
@@ -363,13 +425,27 @@ def run_paper(paper: dict[str, Any], cache_root: Path, run_root: Path) -> dict[s
         result["idempotent"] = imported == repeated
         qa = json.loads((project / "source" / "pdf" / "qa.json").read_text(encoding="utf-8"))
         result["status"] = qa["status"]
+        required_status = paper["expected"]["required_status"]
+        if required_status is not None:
+            result["status_gate"] = {
+                "required": required_status,
+                "passed": qa["status"] in {"complete", "complete_with_warnings"},
+            }
         result["metrics"] = qa["metrics"]
         result["issue_codes"] = dict(sorted(Counter(item["code"] for item in qa["issues"]).items()))
         if "jats" in paper["files"]:
             result["token_diagnostics"] = token_diagnostics(
                 diagnostic_tokens(_jats_body_text(jats)),
-                diagnostic_tokens(_article_text(project / "source" / "article.md")),
+                diagnostic_tokens(_pdf_body_text(project)),
             )
+            minimums = paper["expected"]["semantic_minimums"]
+            result["semantic_gate"] = {
+                "minimums": minimums,
+                "passed": all(
+                    result["token_diagnostics"][name] >= minimums[name]
+                    for name in SEMANTIC_KEYS
+                ),
+            }
     except (CorpusError, FileExistsError, FileNotFoundError, PdfUnsupportedError, RuntimeError, ValueError) as error:
         result["error"] = f"{type(error).__name__}: {error}"
     result["duration_seconds"] = round(time.monotonic() - started, 3)
@@ -380,13 +456,26 @@ def build_report(
     manifest: dict[str, Any], papers: list[dict[str, Any]], results: list[dict[str, Any]], run_id: str
 ) -> dict[str, Any]:
     statuses = Counter(result["status"] for result in results)
+    semantic_failures = sum(
+        item["semantic_gate"] is not None and not item["semantic_gate"]["passed"]
+        for item in results
+    )
+    status_failures = sum(
+        item["status_gate"] is not None and not item["status_gate"]["passed"]
+        for item in results
+    )
     return {
         "schema_version": 1,
         "corpus_id": manifest["corpus_id"],
         "run_id": run_id,
         "environment": environment_record(),
         "selection": [paper["id"] for paper in papers],
-        "summary": {"papers": len(results), "statuses": dict(sorted(statuses.items()))},
+        "summary": {
+            "papers": len(results),
+            "statuses": dict(sorted(statuses.items())),
+            "semantic_failures": semantic_failures,
+            "status_failures": status_failures,
+        },
         "results": sorted(results, key=lambda item: item["id"]),
     }
 
@@ -399,6 +488,8 @@ def render_report_markdown(report: dict[str, Any]) -> str:
         f"- Run: `{report['run_id']}`",
         f"- Papers: `{report['summary']['papers']}`",
         f"- Statuses: `{json.dumps(report['summary']['statuses'], sort_keys=True)}`",
+        f"- Semantic gate failures: `{report['summary']['semantic_failures']}`",
+        f"- Status gate failures: `{report['summary']['status_failures']}`",
         "",
         "| Paper | Status | Pages | Figures | Tables | Equations | Unresolved | Seconds |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
@@ -483,7 +574,15 @@ def main(arguments: list[str] | None = None) -> int:
         )
         (run_root / "report.md").write_text(render_report_markdown(report), encoding="utf-8")
         print(run_root / "report.json")
-        return 1 if any(result["error"] for result in results) else 0
+        return 1 if any(
+            result["error"]
+            or (result["status_gate"] is not None and not result["status_gate"]["passed"])
+            or (
+                result["semantic_gate"] is not None
+                and not result["semantic_gate"]["passed"]
+            )
+            for result in results
+        ) else 0
     except CorpusError as error:
         print(error, file=sys.stderr)
         return 1

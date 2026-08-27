@@ -33,6 +33,14 @@ KNOWN_HEADINGS = {
     "declarationofcompetinginterest",
     "creditauthorshipcontributionstatement",
 }
+SIDEBAR_METADATA_LABELS = {
+    "software",
+    "editor",
+    "reviewers",
+    "submitted",
+    "published",
+    "license",
+}
 
 
 @dataclass(frozen=True)
@@ -44,6 +52,7 @@ class LayoutLine:
     object_refs: list[str]
     font_size: float
     fontname: str
+    page_width: float
     column: str = "full"
 
 
@@ -65,6 +74,7 @@ def recover_layout(
     }
     document_tokens = _document_tokens(page_lines)
     artifact_keys = _repeated_artifacts(run.pages, page_lines, policy)
+    repeated_visual_refs = _repeated_visual_artifact_refs(run.pages, policy)
     blocks: list[PdfBlock] = []
     accounting_by_ref: dict[str, PdfObjectAccounting] = {}
     valid_characters = invalid_characters = rotated_characters = 0
@@ -77,9 +87,20 @@ def recover_layout(
         visual_clusters = pdf_visual.cluster_visual_objects(
             page.objects, page.width, page.height
         )
+        filtered_visual_clusters = []
+        for cluster in visual_clusters:
+            retained = [
+                item for item in cluster.objects if item.object_ref not in repeated_visual_refs
+            ]
+            if retained:
+                filtered_visual_clusters.append(
+                    pdf_visual.VisualCluster(
+                        tuple(retained), tuple(_union_bbox([item.bbox for item in retained]))
+                    )
+                )
         content_clusters = [
             cluster
-            for cluster in visual_clusters
+            for cluster in filtered_visual_clusters
             if not pdf_visual.decorative_cluster(
                 cluster, float(policy["rule_thickness_pt"])
             )
@@ -244,8 +265,25 @@ def recover_layout(
             )
 
         for cluster in visual_clusters:
+            repeated = [
+                item for item in cluster.objects if item.object_ref in repeated_visual_refs
+            ]
+            for item in repeated:
+                accounting_by_ref[item.object_ref] = PdfObjectAccounting(
+                    1,
+                    item.object_ref,
+                    item.kind,
+                    "excluded_artifact",
+                    None,
+                    [],
+                    None,
+                    "PDF_REPEATED_VISUAL_HEADER_FOOTER",
+                )
             remaining = [
-                item for item in cluster.objects if item.object_ref not in claims
+                item
+                for item in cluster.objects
+                if item.object_ref not in claims
+                and item.object_ref not in repeated_visual_refs
             ]
             if not remaining:
                 continue
@@ -254,7 +292,7 @@ def recover_layout(
             )
             if pdf_visual.decorative_cluster(
                 remaining_cluster, float(policy["rule_thickness_pt"])
-            ):
+            ) or _link_decoration_cluster(remaining_cluster, page.objects):
                 for item in remaining:
                     accounting_by_ref[item.object_ref] = PdfObjectAccounting(
                         1,
@@ -264,7 +302,11 @@ def recover_layout(
                         None,
                         [],
                         None,
-                        "PDF_DECORATIVE_RULE",
+                        (
+                            "PDF_LINK_DECORATION"
+                            if _link_decoration_cluster(remaining_cluster, page.objects)
+                            else "PDF_DECORATIVE_RULE"
+                        ),
                     )
                 continue
             visual_line = LayoutLine(
@@ -275,6 +317,7 @@ def recover_layout(
                 [item.object_ref for item in remaining],
                 0.0,
                 "",
+                page.width,
             )
             visual_block = _make_block(
                 source_sha256,
@@ -338,7 +381,24 @@ def recover_layout(
             if page.rotation in {90, 270} or not item.attrs.get("upright", True):
                 rotated_characters += 1
 
+    blocks, merged_block_ids = _merge_cross_page_continuations(blocks)
+    if merged_block_ids:
+        accounting_by_ref = {
+            object_ref: replace(
+                item,
+                primary_block_id=_final_block_id(item.primary_block_id, merged_block_ids),
+                supporting_block_ids=[
+                    _final_block_id(block_id, merged_block_ids) or block_id
+                    for block_id in item.supporting_block_ids
+                ],
+            )
+            if item.primary_block_id in merged_block_ids
+            or any(block_id in merged_block_ids for block_id in item.supporting_block_ids)
+            else item
+            for object_ref, item in accounting_by_ref.items()
+        }
     blocks = [replace(block, ordinal=index) for index, block in enumerate(blocks, 1)]
+    blocks = _mark_front_matter(blocks)
     blocks = _mark_reference_blocks(blocks)
     blocks, cross_page_blocks = _mark_cross_page_ambiguities(blocks)
     if cross_page_blocks:
@@ -445,6 +505,7 @@ def _lines_from_chars(
                     [item.object_ref for item in segment],
                     median(sizes) if sizes else 0.0,
                     max(set(fonts), key=fonts.count) if fonts else "",
+                    page.width,
                 )
             )
     return sorted(lines, key=lambda line: (line.bbox[1], line.bbox[0]))
@@ -491,6 +552,57 @@ def _repeated_artifacts(
     return repeated
 
 
+def _repeated_visual_artifact_refs(
+    pages: list[PdfPageObservation], policy: dict[str, Any]
+) -> set[str]:
+    seen: dict[tuple[Any, ...], set[int]] = defaultdict(set)
+    refs_by_key: dict[tuple[Any, ...], set[str]] = defaultdict(set)
+    zone = float(policy["header_footer_zone_ratio"])
+    for page in pages:
+        for cluster in pdf_visual.cluster_visual_objects(
+            page.objects, page.width, page.height
+        ):
+            x0, y0, x1, y1 = cluster.bbox
+            near_edge = y0 <= page.height * zone * 1.6 or y1 >= page.height * (1 - zone * 1.6)
+            compact = y1 - y0 <= page.height * 0.16
+            if not near_edge or not compact:
+                continue
+            kinds = tuple(sorted(item.kind for item in cluster.objects))
+            key = (
+                round(x0 / page.width, 2),
+                round(y0 / page.height, 2),
+                round(x1 / page.width, 2),
+                round(y1 / page.height, 2),
+                kinds,
+            )
+            seen[key].add(page.page)
+            refs_by_key[key].update(item.object_ref for item in cluster.objects)
+    required = max(
+        int(policy["min_repeated_artifact_pages"]),
+        math.ceil(len(pages) * float(policy["repeated_artifact_page_ratio"])),
+    )
+    return {
+        object_ref
+        for key, page_numbers in seen.items()
+        if len(page_numbers) >= required
+        for object_ref in refs_by_key[key]
+    }
+
+
+def _link_decoration_cluster(
+    cluster: pdf_visual.VisualCluster, page_objects: list[RawPdfObject]
+) -> bool:
+    x0, y0, x1, y1 = cluster.bbox
+    if x1 - x0 > 8.0 or y1 - y0 > 8.0:
+        return False
+    return any(
+        item.kind == "annotation"
+        and item.bbox[0] - 6.0 <= x0 <= item.bbox[2] + 6.0
+        and item.bbox[1] - 3.0 <= y0 <= item.bbox[3] + 3.0
+        for item in page_objects
+    )
+
+
 def _artifact_key(
     page: PdfPageObservation, line: LayoutLine, policy: dict[str, Any]
 ) -> str:
@@ -523,55 +635,129 @@ def _reading_order(
             target.append(line)
     pairs: list[tuple[float, float, list[LayoutLine]]] = []
     min_gap = max(float(policy["line_split_gap_points"]), page.width * policy["column_gap_ratio"])
-    multi_column_rows = 0
+    three_column_rows: list[list[LayoutLine]] = []
     for row in by_top:
         row = sorted(row, key=lambda item: item.bbox[0])
         if len(row) >= 3 and all(
             right.bbox[0] - left.bbox[2] >= min_gap
             for left, right in pairwise(row)
+        ) and all(
+            len(item.text) >= 12 or item.bbox[2] - item.bbox[0] >= page.width * 0.15
+            for item in row[:3]
         ):
-            multi_column_rows += 1
+            three_column_rows.append(row)
         if len(row) != 2:
             continue
         gap = row[1].bbox[0] - row[0].bbox[2]
-        if gap >= min_gap:
+        strong_sides = all(
+            len(item.text) >= 20 or item.bbox[2] - item.bbox[0] >= page.width * 0.18
+            for item in row
+        )
+        if gap >= min_gap and strong_sides:
             pairs.append(((row[0].bbox[2] + row[1].bbox[0]) / 2, row[0].bbox[1], row))
-    if multi_column_rows >= int(policy["column_min_shared_lines"]):
-        if any(re.match(r"^table\s+\d+\b", line.text, re.IGNORECASE) for line in lines):
-            # Dense aligned segments belong to an unresolved table region, not body columns.
-            return sorted(lines, key=lambda item: (item.bbox[1], item.bbox[0])), 1
-        return sorted(lines, key=lambda item: (item.bbox[1], item.bbox[0])), 3
+    cut: float | None = None
     if len(pairs) < int(policy["column_min_shared_lines"]):
-        return sorted(lines, key=lambda item: (item.bbox[1], item.bbox[0])), 1
+        if (
+            len(three_column_rows) >= int(policy["column_min_shared_lines"])
+            and not any(
+                re.match(r"^table\s+\d+\b", line.text, re.IGNORECASE)
+                for line in lines
+            )
+        ):
+            return sorted(lines, key=lambda item: (item.bbox[1], item.bbox[0])), 3
+        cut = _inferred_vertical_gutter(lines, page.width)
+        if cut is None:
+            return sorted(lines, key=lambda item: (item.bbox[1], item.bbox[0])), 1
 
-    cut = median(item[0] for item in pairs)
-    band_top = min(item[1] for item in pairs) - tolerance
-    band_bottom = max(max(line.bbox[3] for line in item[2]) for item in pairs) + tolerance
-    before = [line for line in lines if line.bbox[3] < band_top]
-    after = [line for line in lines if line.bbox[1] > band_bottom]
-    band = [line for line in lines if line not in before and line not in after]
-    left = [line for line in band if line.bbox[2] <= cut]
-    right = [line for line in band if line.bbox[0] >= cut]
-    spanning = [line for line in band if line not in left and line not in right]
+    cut = cut if cut is not None else median(item[0] for item in pairs)
+    left: list[LayoutLine] = []
+    right: list[LayoutLine] = []
+    spanning: list[LayoutLine] = []
+    for line in lines:
+        heading_separator = _heading_candidate_line(line) and not any(
+            other is not line
+            and other.bbox[0] >= cut - tolerance
+            and other.bbox[1] <= line.bbox[3] + tolerance
+            and line.bbox[1] <= other.bbox[3] + tolerance
+            for other in lines
+        )
+        if heading_separator:
+            spanning.append(line)
+        elif line.bbox[2] <= cut + tolerance:
+            left.append(line)
+        elif line.bbox[0] >= cut - tolerance:
+            right.append(line)
+        else:
+            spanning.append(line)
     if not left or not right:
         return sorted(lines, key=lambda item: (item.bbox[1], item.bbox[0])), 1
-    if spanning:
-        # P1a does not guess how spanning text interleaves with two independent columns.
-        return sorted(lines, key=lambda item: (item.bbox[1], item.bbox[0])), 3
-    ordered_band = [
-        replace(item, column="left") for item in sorted(left, key=lambda item: item.bbox[1])
-    ]
-    ordered_band.extend(
-        replace(item, column="right")
-        for item in sorted(right, key=lambda item: item.bbox[1])
-    )
-    ordered_band.extend(sorted(spanning, key=lambda item: (item.bbox[1], item.bbox[0])))
-    return (
-        sorted(before, key=lambda item: (item.bbox[1], item.bbox[0]))
-        + ordered_band
-        + sorted(after, key=lambda item: (item.bbox[1], item.bbox[0])),
-        2,
-    )
+    return _banded_column_order(left, right, spanning), 2
+
+
+def _inferred_vertical_gutter(lines: list[LayoutLine], page_width: float) -> float | None:
+    step = max(2.0, page_width / 150.0)
+    start, stop = page_width * 0.12, page_width * 0.88
+    candidates = [start + index * step for index in range(round((stop - start) / step) + 1)]
+    scored: list[tuple[float, float]] = []
+    for cut in candidates:
+        left = [item for item in lines if item.bbox[2] <= cut - 2.0]
+        right = [item for item in lines if item.bbox[0] >= cut + 2.0]
+        crossing = [item for item in lines if item not in left and item not in right]
+        if min(len(left), len(right)) < 3:
+            continue
+        if len(crossing) > max(3, round((len(left) + len(right)) * 0.15)):
+            continue
+        left_width = median(item.bbox[2] - item.bbox[0] for item in left)
+        right_width = median(item.bbox[2] - item.bbox[0] for item in right)
+        asymmetric_sidebar = (
+            left_width <= page_width * 0.28 and right_width >= page_width * 0.45
+        ) or (
+            right_width <= page_width * 0.28 and left_width >= page_width * 0.45
+        )
+        if not asymmetric_sidebar:
+            continue
+        score = (
+            min(len(left), len(right)) * 3
+            + len(left)
+            + len(right)
+            - len(crossing) * 5
+        )
+        scored.append((score, cut))
+    return max(scored)[1] if scored else None
+
+
+def _banded_column_order(
+    left: list[LayoutLine],
+    right: list[LayoutLine],
+    spanning: list[LayoutLine],
+) -> list[LayoutLine]:
+    """Order local two-column bands separated by source-grounded spanning lines."""
+    separators = sorted(spanning, key=lambda item: (item.bbox[1], item.bbox[0]))
+    boundaries = [(item.bbox[1] + item.bbox[3]) / 2 for item in separators]
+    bands: list[list[LayoutLine]] = [[] for _ in range(len(separators) + 1)]
+    for line in left + right:
+        center = (line.bbox[1] + line.bbox[3]) / 2
+        band_index = sum(boundary < center for boundary in boundaries)
+        bands[band_index].append(line)
+
+    output: list[LayoutLine] = []
+    for index, band in enumerate(bands):
+        band_left = sorted(
+            (item for item in band if item in left),
+            key=lambda item: (item.bbox[1], item.bbox[0]),
+        )
+        band_right = sorted(
+            (item for item in band if item in right),
+            key=lambda item: (item.bbox[1], item.bbox[0]),
+        )
+        ordered_columns = [(band_left, "left"), (band_right, "right")]
+        if band_left and band_right and band_right[0].bbox[1] + 5.0 < band_left[0].bbox[1]:
+            ordered_columns.reverse()
+        for column_lines, name in ordered_columns:
+            output.extend(replace(item, column=name) for item in column_lines)
+        if index < len(separators):
+            output.append(separators[index])
+    return output
 
 
 def _paragraphs(lines: list[LayoutLine]) -> list[list[LayoutLine]]:
@@ -654,10 +840,37 @@ def _classify_block(
     if ambiguous_hyphen:
         return "paragraph", "unresolved", ["PDF_DEHYPHENATION_AMBIGUOUS"]
     if _heading_candidate_line(lines[0]):
+        label = text.strip().rstrip(":").casefold()
+        if label in SIDEBAR_METADATA_LABELS:
+            return "metadata", "ok", []
+        if _likely_section_heading(text):
+            return "section_heading", "ok", []
+        if "," in text or re.search(r"\band\b", text, re.IGNORECASE):
+            return "paragraph", "ok", []
         return "paragraph", "unresolved", ["PDF_HEADING_AMBIGUOUS"]
     if compact in {"articleinfo", "keywords"}:
         return "metadata", "ok", []
+    if (
+        lines[0].column == "left"
+        and lines[0].page_width > 0
+        and max(line.bbox[2] for line in lines) <= lines[0].page_width * 0.27
+    ):
+        return "metadata", "ok", []
     return "paragraph", "ok", []
+
+
+def _likely_section_heading(text: str) -> bool:
+    value = text.strip()
+    if not value or value.endswith((":", ".", ",", ";")) or "," in value:
+        return False
+    words = re.findall(r"[A-Za-z][A-Za-z0-9-]*", value)
+    if not 1 <= len(words) <= 12:
+        return False
+    content_words = [
+        word for word in words if word.casefold() not in {"a", "an", "and", "for", "of", "the", "to"}
+    ]
+    titled = sum(word[:1].isupper() for word in content_words)
+    return bool(content_words) and titled / len(content_words) >= 0.5
 
 
 def _make_block(
@@ -1081,7 +1294,7 @@ def _chars_in_bbox(
 
 
 def _element_line(page: PdfPageObservation, bbox: list[float], text: str, refs: list[str]) -> LayoutLine:
-    return LayoutLine(page.page, bbox, text, text, refs, 0.0, "")
+    return LayoutLine(page.page, bbox, text, text, refs, 0.0, "", page.width)
 
 
 def _equation_visual_overlap(
@@ -1123,6 +1336,21 @@ def _mark_reference_blocks(blocks: list[PdfBlock]) -> list[PdfBlock]:
     return output
 
 
+def _mark_front_matter(blocks: list[PdfBlock]) -> list[PdfBlock]:
+    first_section = next(
+        (index for index, block in enumerate(blocks) if block.kind == "section_heading"),
+        None,
+    )
+    if first_section is None:
+        return blocks
+    return [
+        replace(block, kind="metadata")
+        if index < first_section and block.kind == "paragraph" and block.status == "ok"
+        else block
+        for index, block in enumerate(blocks)
+    ]
+
+
 def _mark_cross_page_ambiguities(
     blocks: list[PdfBlock],
 ) -> tuple[list[PdfBlock], set[str]]:
@@ -1159,3 +1387,82 @@ def _mark_cross_page_ambiguities(
         for block in blocks
     ]
     return output, ambiguous
+
+
+def _merge_cross_page_continuations(
+    blocks: list[PdfBlock],
+) -> tuple[list[PdfBlock], dict[str, str]]:
+    output = list(blocks)
+    replacements: dict[str, str] = {}
+    while True:
+        merged = False
+        end_by_page: dict[int, list[tuple[int, PdfBlock]]] = defaultdict(list)
+        start_by_page: dict[int, list[tuple[int, PdfBlock]]] = defaultdict(list)
+        for index, block in enumerate(output):
+            if block.kind != "paragraph" or block.status != "ok" or block.issues:
+                continue
+            start_by_page[block.provenance[0]["page"]].append((index, block))
+            end_by_page[block.provenance[-1]["page"]].append((index, block))
+        for page in sorted(end_by_page):
+            if page + 1 not in start_by_page:
+                continue
+            left_index, left = max(
+                end_by_page[page], key=lambda item: item[1].provenance[-1]["bbox"][3]
+            )
+            right_index, right = min(
+                start_by_page[page + 1], key=lambda item: item[1].provenance[0]["bbox"][1]
+            )
+            if not _certain_cross_page_continuation(left, right):
+                continue
+            refs = left.source_object_refs + right.source_object_refs
+            merged_id = make_block_id(left.source_sha256, left.run_id, refs)
+            merged_block = replace(
+                left,
+                block_id=merged_id,
+                provenance=left.provenance + right.provenance,
+                source_object_refs=refs,
+                raw_text=(left.raw_text or "") + "\n" + (right.raw_text or ""),
+                text=(left.text or "").rstrip() + " " + (right.text or "").lstrip(),
+                transformations=left.transformations
+                + right.transformations
+                + [
+                    {
+                        "kind": "join_cross_page",
+                        "input_refs": refs,
+                        "before": (left.text or "") + "\n" + (right.text or ""),
+                        "after": (left.text or "").rstrip()
+                        + " "
+                        + (right.text or "").lstrip(),
+                        "rule": "pdf-layout-v1",
+                    }
+                ],
+            )
+            replacements[left.block_id] = merged_id
+            replacements[right.block_id] = merged_id
+            output[left_index] = merged_block
+            output.pop(right_index)
+            merged = True
+            break
+        if not merged:
+            return output, replacements
+
+
+def _certain_cross_page_continuation(left: PdfBlock, right: PdfBlock) -> bool:
+    left_text = (left.text or "").rstrip()
+    right_text = (right.text or "").lstrip()
+    left_provenance = left.provenance[-1]
+    right_provenance = right.provenance[0]
+    return bool(
+        left_text
+        and right_text[:1].islower()
+        and not left_text.endswith((".", "?", "!", ":", ";", "-"))
+        and left_provenance["bbox"][3] >= left_provenance["page_height"] * 0.88
+        and right_provenance["bbox"][1] <= right_provenance["page_height"] * 0.18
+        and abs(left_provenance["bbox"][0] - right_provenance["bbox"][0]) <= 12.0
+    )
+
+
+def _final_block_id(block_id: str | None, replacements: dict[str, str]) -> str | None:
+    while block_id in replacements and replacements[block_id] != block_id:
+        block_id = replacements[block_id]
+    return block_id

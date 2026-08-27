@@ -20,11 +20,14 @@ jobs:
       - run: ruff check .
   pdf:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: ${{ matrix.python-version }}
       - run: python -m pip install -e '.[dev,pdf]'
       - run: pytest tests/test_pdf_import.py
 
@@ -41,13 +44,19 @@ jobs:
         run: >-
           python scripts/pdf_corpus.py fetch
           --id pone-0251194
+          --id pcbi-1005331
+          --id pcbi-1002377
+          --id pcbi-1012374
           --id acl-tables-2024
           --id joss-04061
           --id layoutparser-2103-15348
-      - name: Run real-paper diagnostic slice
+      - name: Run real-paper regression slice
         run: >-
           python scripts/pdf_corpus.py run --jobs 2
           --id pone-0251194
+          --id pcbi-1005331
+          --id pcbi-1002377
+          --id pcbi-1012374
           --id acl-tables-2024
           --id joss-04061
           --id layoutparser-2103-15348

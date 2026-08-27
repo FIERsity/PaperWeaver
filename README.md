@@ -9,7 +9,7 @@ It deliberately does not try to be a general reading-guide, knowledge-graph, or 
 
 ## Status
 
-Version 0.5 adds the first deterministic PDF import slice. With the optional `[pdf]` dependencies, born-digital journal PDFs are copied unchanged to `source/original.pdf`, identified by SHA-256, converted into page/bbox-located blocks, and rendered as an anchored `source/article.md` with machine-readable and human-readable QA reports. Repeated headers and page numbers are retained in the evidence ledger but excluded from Markdown; local one/two-column text order is reconstructed deterministically.
+Version 0.5 adds the first deterministic PDF import slice. With the optional `[pdf]` dependencies, born-digital journal PDFs are copied unchanged to `source/original.pdf`, identified by SHA-256, converted into page/bbox-located blocks, and rendered as an anchored `source/article.md` with machine-readable and human-readable QA reports. Repeated text or visual headers and page numbers are retained in the evidence ledger but excluded from Markdown; full-width blocks split local one/two-column reading bands deterministically.
 
 The PDF gate is intentionally conservative. Any unresolved glyph, page/vector region, table structure, equation, or ambiguous layout makes the import `incomplete` and prevents `segment`. The implemented P2/P3 core resolves boxed tables (verified when the rule grid closes and every cell character is accounted) into pipe tables, projects translatable cells into Passage slots, and reassembles their translations without exposing Markdown syntax to the model. Caption-bounded image/vector clusters become `figure` blocks with content-addressed crops and separate translatable captions. Simple selectable display equations are promoted only when every baseline/script/number glyph is consumed by a restricted parser; other equations stay unresolved crops. Unboxed/span tables and ambiguous or captionless figures remain honest crops.
 
@@ -104,3 +104,5 @@ python scripts/pdf_corpus.py run --jobs 2
 
 Default `pytest` never downloads papers. See [`tests/corpus/README.md`](tests/corpus/README.md)
 for license, checksum, selection, and opt-in integration-test rules.
+The corpus runner enforces reviewed JATS token/order minima, and `joss-04061` is the first
+checksum-pinned real PDF required to remain `complete` and pass the full structural export path.

@@ -201,6 +201,63 @@ def _three_column_pdf(path: Path) -> None:
     document.save()
 
 
+def _mixed_band_two_column_pdf(path: Path) -> None:
+    document = canvas.Canvas(str(path), pagesize=A4, invariant=True)
+    _, height = A4
+    document.setFont("Helvetica-Bold", 17)
+    document.drawString(42, height - 55, "Mixed Band Two Column Study")
+    document.setFont("Helvetica", 9)
+    for row in range(4):
+        y = height - 100 - row * 18
+        document.drawString(42, y, f"Upper left paragraph line {row} with source evidence.")
+        document.drawString(315, y, f"Upper right paragraph line {row} with source evidence.")
+    document.setFont("Helvetica-Bold", 12)
+    document.drawString(42, height - 190, "2. Results")
+    document.setFont("Helvetica", 9)
+    for row in range(4):
+        y = height - 230 - row * 18
+        document.drawString(42, y, f"Lower left paragraph line {row} with source evidence.")
+        document.drawString(315, y, f"Lower right paragraph line {row} with source evidence.")
+    document.save()
+
+
+def _repeated_visual_header_and_link_pdf(path: Path) -> None:
+    document = canvas.Canvas(str(path), pagesize=A4, invariant=True)
+    _, height = A4
+    for page in range(1, 4):
+        document.setFillColorRGB(0.1, 0.2, 0.4)
+        document.rect(24, height - 48, 20, 20, stroke=0, fill=1)
+        document.setFillColorRGB(0, 0, 0)
+        if page == 1:
+            document.setFont("Helvetica-Bold", 17)
+            document.drawString(60, height - 72, "Repeated Visual Artifact Study")
+            document.setFont("Helvetica-Bold", 11)
+            document.drawString(60, height - 110, "Introduction")
+        document.setFont("Helvetica", 10)
+        document.drawString(
+            60,
+            height - 145,
+            f"Page {page} contains selectable source text with deterministic provenance.",
+        )
+        document.drawString(
+            60,
+            height - 163,
+            "Repeated header artwork and link decorations are not paper findings.",
+        )
+        if page == 1:
+            document.drawString(60, height - 190, "Repository")
+            document.linkURL(
+                "https://example.test/repository",
+                (60, height - 193, 110, height - 181),
+                relative=0,
+            )
+            document.setFillColorRGB(0.2, 0.2, 0.2)
+            document.rect(113, height - 191, 4, 4, stroke=0, fill=1)
+            document.setFillColorRGB(0, 0, 0)
+        document.showPage()
+    document.save()
+
+
 def _two_figure_pdf(path: Path) -> None:
     document = canvas.Canvas(str(path), pagesize=A4, invariant=True)
     _, height = A4
@@ -375,6 +432,52 @@ def test_two_column_order_and_running_artifacts(tmp_path: Path) -> None:
     )
     assert '"kind": "header"' in blocks
     assert '"disposition": "excluded_artifact"' in blocks
+
+
+def test_two_column_bands_are_split_by_full_width_section_heading(tmp_path: Path) -> None:
+    source = tmp_path / "mixed-bands.pdf"
+    _mixed_band_two_column_pdf(source)
+    project = _new_project(tmp_path)
+    import_paper(project, source)
+    article = (project / "source" / "article.md").read_text(encoding="utf-8")
+    assert article.index("Upper left paragraph line 3") < article.index(
+        "Upper right paragraph line 0"
+    )
+    assert article.index("Upper right paragraph line 3") < article.index("## 2. Results")
+    assert article.index("## 2. Results") < article.index("Lower left paragraph line 0")
+    assert article.index("Lower left paragraph line 3") < article.index(
+        "Lower right paragraph line 0"
+    )
+
+
+def test_repeated_visual_headers_and_link_icons_are_explicit_artifacts(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "visual-artifacts.pdf"
+    _repeated_visual_header_and_link_pdf(source)
+    project = _new_project(tmp_path)
+    import_paper(project, source)
+    qa = json.loads((project / "source" / "pdf" / "qa.json").read_text(encoding="utf-8"))
+    assert qa["status"] in {"complete", "complete_with_warnings"}
+    manifest = json.loads(
+        (project / "source" / "pdf" / "manifest.json").read_text(encoding="utf-8")
+    )
+    accounting = [
+        json.loads(line)
+        for line in (
+            project
+            / "source"
+            / "pdf"
+            / "runs"
+            / manifest["active_run_id"]
+            / "object-accounting.jsonl"
+        )
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    reasons = {item["reason_code"] for item in accounting}
+    assert "PDF_REPEATED_VISUAL_HEADER_FOOTER" in reasons
+    assert "PDF_LINK_DECORATION" in reasons
 
 
 def test_visible_non_text_region_is_unresolved_and_blocks_segment(tmp_path: Path) -> None:
@@ -755,6 +858,35 @@ def test_dehyphenation_and_cross_page_continuation_are_audited(tmp_path: Path) -
     audited = [item for item in blocks if "PDF_DEHYPHENATION_AMBIGUOUS" in item["issues"]]
     assert audited and audited[0]["raw_text"] != audited[0]["text"]
     assert audited[0]["transformations"]
+
+
+def test_geometry_proven_cross_page_paragraph_is_merged(tmp_path: Path) -> None:
+    source = tmp_path / "certain-continuation.pdf"
+    document = canvas.Canvas(str(source), pagesize=A4, invariant=True)
+    _, height = A4
+    document.setFont("Helvetica-Bold", 17)
+    document.drawString(42, height - 60, "Certain Continuation")
+    document.setFont("Helvetica-Bold", 11)
+    document.drawString(42, height - 100, "Introduction")
+    document.setFont("Helvetica", 10)
+    document.drawString(42, height - 130, "A complete opening paragraph establishes context.")
+    document.drawString(42, 55, "This deterministic paragraph continues with")
+    document.showPage()
+    document.setFont("Helvetica", 10)
+    document.drawString(42, height - 55, "lowercase source text and ends on the next page.")
+    document.drawString(42, height - 80, "A separate paragraph follows with a complete sentence.")
+    document.save()
+    project = _new_project(tmp_path)
+    import_paper(project, source)
+    blocks = _pdf_blocks(project)
+    merged = next(
+        item for item in blocks if "continues with lowercase source text" in (item["text"] or "")
+    )
+    assert [item["page"] for item in merged["provenance"]] == [1, 2]
+    assert any(
+        item["kind"] == "join_cross_page" for item in merged["transformations"]
+    )
+    assert "PDF_CROSS_PAGE_CONTINUATION_UNRESOLVED" not in merged["issues"]
 
 
 def test_hairline_rule_is_excluded_artifact_not_visual_content(tmp_path: Path) -> None:
