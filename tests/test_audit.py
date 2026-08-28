@@ -98,9 +98,9 @@ def test_audit_export_lists_repairable_blocks(tmp_path: Path) -> None:
     assert "Table 1" in table["caption"]["text"]
     assert table["attempts"]["count"] == 0
     assert table["region_glyph_count"] > 0
-    assert len(table["glyphs"]) == table["region_glyph_count"]
+    assert len(table["glyphs"]) >= table["region_glyph_count"]
     payload, x0, y0, x1, y1 = table["glyphs"][0]
-    assert isinstance(payload, str) and payload.strip()
+    assert isinstance(payload, str)
     assert x0 < x1 and y0 < y1
     assert chars_for_block(project, table["block_id"])
 

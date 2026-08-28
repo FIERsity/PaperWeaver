@@ -349,6 +349,8 @@ def _work_orders(state: _PdfState, ledger: list[AuditProposal]) -> list[dict[str
         bbox = provenance["bbox"]
         asset = state.assets.get((block.get("asset_refs") or [None])[0])
         chars = chars_in_bbox(chars_by_page.get(page, []), bbox, state.policy)
+        if not any(char.payload.strip() for char in chars):
+            continue  # degenerate crop: no glyph evidence to audit against
         block_attempts = attempts.get(block["block_id"], [])
         orders.append(
             {
@@ -381,7 +383,6 @@ def _work_orders(state: _PdfState, ledger: list[AuditProposal]) -> list[dict[str
                         round(char.bbox[3], 2),
                     ]
                     for char in chars
-                    if char.payload.strip()
                 ],
                 "attempts": {
                     "count": len(block_attempts),

@@ -34,7 +34,9 @@ text**: table cells are rebuilt by the engine from the PDF's own characters.
    - Sort glyph spans on each axis; take the largest inter-glyph gaps as cut
      windows until you have the column/row count you see in the crop.
    - Slide each cut inside its window to **maximize the distance to the nearest
-     glyph center** on that axis; a cut must end up > 2pt away from every glyph
+     glyph center** on that axis (the glyph list includes whitespace — spacing
+     glyphs count in coverage, so a cut on a space's center kills the proposal);
+     a cut must end up > 2pt away from every glyph
      center (the validator counts a character whose center sits within 2pt of a
      boundary as ambiguous). Slicing a tall glyph's *bbox* is fine — assignment
      is by center — so dense math with stacked fractions still bands: use fewer,
