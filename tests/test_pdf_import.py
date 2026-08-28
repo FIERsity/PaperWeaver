@@ -1363,6 +1363,42 @@ def test_partial_rule_table_is_honest_fallback(tmp_path: Path) -> None:
     )
 
 
+def test_unresolved_table_region_bbox_covers_content_glyphs(tmp_path: Path) -> None:
+    """A short rule must not shrink the honest region: audit carves from this bbox."""
+    source = tmp_path / "narrow-rule.pdf"
+    document = canvas.Canvas(str(source), pagesize=A4, invariant=True)
+    _, height = A4
+    document.setFont("Helvetica-Bold", 17)
+    document.drawString(42, height - 55, "Narrow Rule Table Study")
+    document.setFont("Helvetica-Bold", 11)
+    document.drawString(42, height - 95, "Methods")
+    document.setFont("Helvetica", 9)
+    document.drawString(42, height - 120, "A short rule under a wide table must not shrink the region.")
+    document.setFont("Helvetica", 9)
+    document.drawString(60, height - 170, "Table 1. Sample measurements")
+    document.setFont("Helvetica", 8)
+    document.drawString(60, height - 190, "Alpha 1.0")
+    document.drawString(300, height - 190, "Beta 2.0")
+    document.setLineWidth(0.8)
+    document.line(60, height - 200, 150, height - 200)
+    document.drawString(60, height - 212, "Gamma 3.5")
+    document.drawString(300, height - 212, "Delta 4.0")
+    document.save()
+    project = _new_project(tmp_path)
+    import_paper(project, source)
+    blocks = _pdf_blocks(project)
+    table = next(
+        block for block in blocks
+        if block["kind"] == "table" and block["status"] == "unresolved"
+    )
+    _, _, x1, y1 = table["provenance"][0]["bbox"]
+    # the rule spans x 60..150; the content extends to x ~350 and below the rule
+    assert x1 > 300, f"region bbox must cover wide content glyphs, got {x1=}"
+    assert y1 >= 212, f"region bbox must cover glyphs below the rule, got {y1=}"
+    qa = json.loads((project / "source" / "pdf" / "qa.json").read_text(encoding="utf-8"))
+    assert qa["metrics"]["source_object_accounting_ratio"] == 1.0
+
+
 def test_ruled_row_table_verifies_without_vertical_rules(tmp_path: Path) -> None:
     """Horizontal row separators alone are enough to promote a table."""
     source = tmp_path / "ruled-rows.pdf"

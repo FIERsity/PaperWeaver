@@ -893,6 +893,8 @@ else:
 
 #### Table
 
+未解析区域（honest fallback）的 bbox 取「claimed 规则线 ∪ 垂直距任一规则 ±10pt 的字形」——既覆盖内部行与贴边字形，也不吞远处正文；审计工单携带 caption 与 rules bbox 供 skill 定位。
+
 表格重建有两条可提升路径，其余一律 honest fallback：
 
 1. **Boxed grid（默认尝试）**：规则载体为 `line`、细 `rect` 或轴对齐细 `curve` hairline（部分生成器用 Bezier 细条画表框）。种子必须位于 caption 底缘之下并邻近 caption；沿共享行列坐标生长时以种子最高点为地板、以 `table_max_rule_span_pt` 为向下跨度上限，防止吸入同页其他元素。重建时先做 **主导格心蒸馏**：迭代地仅保留"行簇并集触及全列跨度、列簇并集触及全行跨度"的线，孤立页边刻线/装饰 hairline 因无连接证据而被排除（不是猜测结构，而是拒绝非承重证据）；cell 文本仍须与表区字符一一 accounting。

@@ -351,6 +351,7 @@ def _work_orders(state: _PdfState, ledger: list[AuditProposal]) -> list[dict[str
         chars = chars_in_bbox(chars_by_page.get(page, []), bbox, state.policy)
         if not any(char.payload.strip() for char in chars):
             continue  # degenerate crop: no glyph evidence to audit against
+        rules_bbox = _rules_bbox(state.run_root, page, block.get("source_object_refs") or [])
         block_attempts = attempts.get(block["block_id"], [])
         orders.append(
             {
@@ -372,6 +373,7 @@ def _work_orders(state: _PdfState, ledger: list[AuditProposal]) -> list[dict[str
                     else None
                 ),
                 "caption": captions.get(block["block_id"]),
+                "rules_bbox": rules_bbox,
                 "context_text": (block.get("raw_text") or "")[:400],
                 "region_glyph_count": sum(1 for char in chars if char.payload.strip()),
                 "glyphs": [
@@ -410,10 +412,40 @@ def _target_type(block: dict[str, Any]) -> str | None:
     return None
 
 
+def _rules_bbox(
+    run_root: Path, page: int, refs: list[str]
+) -> list[float] | None:
+    """Union bbox of the claimed rule objects, when the refs are rule carriers."""
+    if not refs:
+        return None
+    ref_set = set(refs)
+    boxes = []
+    raw_path = run_root / "raw-objects.jsonl"
+    if not raw_path.exists():
+        return None
+    with raw_path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            raw = json.loads(line)
+            if raw.get("page") == page and raw.get("object_ref") in ref_set and raw.get("object_kind") in {"line", "rect", "curve"}:
+                boxes.append(raw["bbox"])
+    return _union(boxes) if boxes else None
+
+
+def _union(boxes: list[list[float]]) -> list[float]:
+    return [
+        round(min(box[0] for box in boxes), 4),
+        round(min(box[1] for box in boxes), 4),
+        round(max(box[2] for box in boxes), 4),
+        round(max(box[3] for box in boxes), 4),
+    ]
+
+
 def _caption_index(
     state: _PdfState, blocks_by_id: dict[str, dict[str, Any]]
-) -> dict[str, dict[str, str]]:
-    captions: dict[str, dict[str, str]] = {}
+) -> dict[str, dict[str, Any]]:
+    captions: dict[str, dict[str, Any]] = {}
     for relation in state.relations:
         if relation.get("type") != "caption_of":
             continue
@@ -422,8 +454,14 @@ def _caption_index(
             for block_id in relation.get("from_block_ids", [])
         ).strip()
         for block_id in relation.get("to_block_ids", []):
-            if text:
-                captions[block_id] = {"block_id": relation["from_block_ids"][0], "text": text[:400]}
+            if not text:
+                continue
+            caption_block = blocks_by_id.get(relation["from_block_ids"][0])
+            captions[block_id] = {
+                "block_id": relation["from_block_ids"][0],
+                "text": text[:400],
+                "bbox": (caption_block or {}).get("provenance", [{}])[0].get("bbox"),
+            }
     return captions
 
 

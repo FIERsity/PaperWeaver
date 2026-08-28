@@ -1143,9 +1143,32 @@ def _build_elements(
                 # a truly unruled table has no evidence to claim, so the unresolved
                 # caption itself carries the incompleteness.
                 if rules:
+                    # The placeholder region must describe the whole evidence area,
+                    # not just the detected rules: audit work orders and crops carve
+                    # from this bbox, so content glyphs near the rules belong in it.
+                    rules_region = _union_bbox([item.bbox for item in rules])
+                    # Region = the rules plus every glyph vertically within a
+                    # hair's breadth of them: interior rows and straddling edge
+                    # glyphs belong to the table, distant prose does not (the
+                    # audit gate would otherwise require grids to cover it).
+                    row_margin = 10.0
+                    top, bottom = rules_region[1], rules_region[3]
+                    nearby_chars = [
+                        item
+                        for item in page_objects
+                        if item.kind == "char"
+                        and item.object_ref not in block.source_object_refs
+                        and top - row_margin
+                        <= (item.bbox[1] + item.bbox[3]) / 2
+                        <= bottom + row_margin
+                    ]
+                    region_bbox = _union_bbox(
+                        [list(item.bbox) for item in rules]
+                        + [list(item.bbox) for item in nearby_chars]
+                    )
                     line = _element_line(
                         page,
-                        _union_bbox([item.bbox for item in rules]),
+                        region_bbox,
                         "Unresolved table region.",
                         [item.object_ref for item in rules],
                     )
