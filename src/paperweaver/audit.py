@@ -32,6 +32,7 @@ from .pdf_markdown import materialize_markdown
 from .pdf_qa import render_qa_markdown
 from .pdf_repair import (
     ISSUE_FOR_TYPE,
+    applied_payload_digest,
     apply_proposals,
     current_proposals,
     page_chars,
@@ -148,12 +149,11 @@ def apply_audit_proposals(root: Path) -> dict[str, Any]:
     atomic_write_json(source_root / "pdf" / "render-tree.json", tree)
     atomic_write_json(source_root / "pdf" / "qa.json", qa)
     atomic_write_text(source_root / "pdf" / "qa.md", render_qa_markdown(qa))
-    ledger_path = root / "state" / "audit-proposals.jsonl"
     manifest["status"] = new_status
     manifest["article_sha256"] = sha256_bytes(markdown.encode())
     manifest["repairs"] = {
-        "ledger_sha256": sha256_bytes(ledger_path.read_bytes()),
         "applied_proposal_ids": [item["proposal_id"] for item in current],
+        "applied_payload_sha256": applied_payload_digest(current),
         "applied_at": max(item["created_at"] for item in current),
     }
     manifest["artifacts"] = {
@@ -372,6 +372,17 @@ def _work_orders(state: _PdfState, ledger: list[AuditProposal]) -> list[dict[str
                 "caption": captions.get(block["block_id"]),
                 "context_text": (block.get("raw_text") or "")[:400],
                 "region_glyph_count": sum(1 for char in chars if char.payload.strip()),
+                "glyphs": [
+                    [
+                        char.payload,
+                        round(char.bbox[0], 2),
+                        round(char.bbox[1], 2),
+                        round(char.bbox[2], 2),
+                        round(char.bbox[3], 2),
+                    ]
+                    for char in chars
+                    if char.payload.strip()
+                ],
                 "attempts": {
                     "count": len(block_attempts),
                     "accepted": sum(item.status == "accepted" for item in block_attempts),

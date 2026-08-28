@@ -98,6 +98,10 @@ def test_audit_export_lists_repairable_blocks(tmp_path: Path) -> None:
     assert "Table 1" in table["caption"]["text"]
     assert table["attempts"]["count"] == 0
     assert table["region_glyph_count"] > 0
+    assert len(table["glyphs"]) == table["region_glyph_count"]
+    payload, x0, y0, x1, y1 = table["glyphs"][0]
+    assert isinstance(payload, str) and payload.strip()
+    assert x0 < x1 and y0 < y1
     assert chars_for_block(project, table["block_id"])
 
 
@@ -381,6 +385,31 @@ def test_audit_apply_keeps_incomplete_when_targets_remain(tmp_path: Path) -> Non
     qa = json.loads((project / "source" / "pdf" / "qa.json").read_text(encoding="utf-8"))
     assert qa["repairs"] == {"tables": 1, "equations": 0, "total": 1}
     assert qa["metrics"]["unresolved_blocks"] == 1
+
+
+def test_audit_apply_supports_incremental_repairs(tmp_path: Path) -> None:
+    """Apply, then accept a new proposal and apply again without fail-closed."""
+    project = _pdf_project(tmp_path, "incremental", _table_and_equation_pdf)
+    _accept_grid_proposal(tmp_path, project)
+    assert apply_audit_proposals(project)["applied"] == 1
+    order = _order(_work_orders(project), "equation_latex")
+    chars = chars_for_block(project, order["block_id"])
+    glyphs = "".join(char.payload for char in chars if char.payload.strip())
+    draft = _draft(
+        tmp_path,
+        [{"work_order_id": order["work_order_id"], "type": "equation_latex", "latex": glyphs}],
+    )
+    accepted, _ = import_audit_proposals(project, draft, "paper-agent", "test-model")
+    assert accepted == 1
+    result = apply_audit_proposals(project)
+    assert result["applied"] == 2
+    assert result["status"] == "complete_with_repair"
+    article = (project / "source" / "article.md").read_text(encoding="utf-8")
+    assert "| Group | Mean | SD |" in article
+    assert "$$" in article
+    manifest = json.loads((project / "source" / "pdf" / "manifest.json").read_text())
+    assert len(manifest["repairs"]["applied_proposal_ids"]) == 2
+    assert pdf_status(project) == "complete_with_repair"
 
 
 def test_audit_apply_promotes_audited_equation_without_engine_credit(tmp_path: Path) -> None:

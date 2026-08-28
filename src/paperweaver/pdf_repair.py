@@ -165,6 +165,88 @@ def _superseded_paragraphs(
     return superseded
 
 
+def applied_payload_digest(proposals: list[dict[str, Any]]) -> str:
+    """Content digest over the applied proposal set; the ledger may keep growing."""
+    from .pdf_contracts import sha256_bytes
+    from .storage import canonical_json
+
+    payload = [
+        {
+            "proposal_id": item["proposal_id"],
+            "block_id": item["block_id"],
+            "type": item["type"],
+            "payload": item["payload"],
+        }
+        for item in proposals
+    ]
+    return sha256_bytes(canonical_json(payload).encode("utf-8"))
+
+
+REPAIRS_KEYS = {"applied_proposal_ids", "applied_payload_sha256", "applied_at"}
+
+
+def pinned_proposals(
+    root: Path, manifest: dict[str, Any], blocks: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """The proposal set the manifest pins as applied, verified against the ledger.
+
+    The manifest pins an applied SET, not the whole ledger: new attempts may be
+    appended freely, but every pinned proposal must still exist byte-identically
+    (ids plus payload digest), otherwise the applied view is unverifiable.
+    """
+    repairs = manifest.get("repairs")
+    if not repairs:
+        return []
+    if set(repairs) != REPAIRS_KEYS or not isinstance(repairs["applied_proposal_ids"], list):
+        raise ValueError("PDF_REPAIR_MANIFEST_INVALID: repairs section is malformed")
+    ledger_path = root / "state" / "audit-proposals.jsonl"
+    if not ledger_path.is_file():
+        raise ValueError("PDF_REPAIR_LEDGER_MISMATCH: repair ledger is missing")
+    ledger = [
+        json.loads(line)
+        for line in ledger_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    if any(not isinstance(item, dict) or "proposal_id" not in item for item in ledger):
+        raise ValueError(
+            "PDF_REPAIR_LEDGER_MISMATCH: repair ledger contains malformed records"
+        )
+    by_id = {item["proposal_id"]: item for item in ledger}
+    missing = [
+        proposal_id
+        for proposal_id in repairs["applied_proposal_ids"]
+        if proposal_id not in by_id
+    ]
+    if missing:
+        raise ValueError(
+            "PDF_REPAIR_LEDGER_MISMATCH: applied proposals missing from the ledger"
+        )
+    pinned = [by_id[proposal_id] for proposal_id in repairs["applied_proposal_ids"]]
+    if applied_payload_digest(pinned) != repairs["applied_payload_sha256"]:
+        raise ValueError(
+            "PDF_REPAIR_LEDGER_MISMATCH: an applied proposal payload changed in the ledger"
+        )
+    stale = [
+        proposal
+        for proposal in pinned
+        if not _still_targets(blocks, proposal)
+    ]
+    if stale:
+        raise ValueError(
+            "PDF_REPAIR_LEDGER_MISMATCH: a pinned proposal no longer matches the base run"
+        )
+    return pinned
+
+
+def _still_targets(blocks: list[dict[str, Any]], proposal: dict[str, Any]) -> bool:
+    block = next((item for item in blocks if item["block_id"] == proposal["block_id"]), None)
+    return (
+        block is not None
+        and block.get("status") == "unresolved"
+        and ISSUE_FOR_TYPE.get(proposal["type"]) in (block.get("issues") or [])
+    )
+
+
 def applied_view(root: Path) -> list[dict[str, Any]]:
     """Load the derived block view: the base run plus current accepted proposals.
 
@@ -183,21 +265,9 @@ def applied_view(root: Path) -> list[dict[str, Any]]:
         for line in (run_root / "base-blocks.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    ledger_path = root / "state" / "audit-proposals.jsonl"
-    if not manifest.get("repairs") or not ledger_path.exists():
+    current = pinned_proposals(root, manifest, blocks)
+    if not current:
         return blocks
-    ledger = [
-        json.loads(line)
-        for line in ledger_path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    current = current_proposals(blocks, ledger)
-    if [item["proposal_id"] for item in current] != list(
-        manifest["repairs"]["applied_proposal_ids"]
-    ):
-        raise ValueError(
-            "PDF_REPAIR_LEDGER_MISMATCH: applied proposals disagree with the ledger"
-        )
     policy, _ = load_policy(root / "source" / "pdf" / "policy.json")
     blocks_by_id = {block["block_id"]: block for block in blocks}
     pages = {

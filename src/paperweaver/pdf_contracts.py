@@ -268,32 +268,12 @@ def validate_pdf_project(root: Path, *, require_complete: bool) -> str:
     view_records = block_records
     repairs_section = manifest.get("repairs")
     if repairs_section is not None:
-        if set(repairs_section) != {"ledger_sha256", "applied_proposal_ids", "applied_at"} or not isinstance(
-            repairs_section["applied_proposal_ids"], list
-        ):
-            raise RuntimeError("PDF_REPAIR_MANIFEST_INVALID: repairs section is malformed")
-        ledger_path = root / "state" / "audit-proposals.jsonl"
-        if (
-            not ledger_path.is_file()
-            or sha256_bytes(ledger_path.read_bytes()) != repairs_section["ledger_sha256"]
-        ):
-            raise RuntimeError(
-                "PDF_REPAIR_LEDGER_MISMATCH: repair ledger changed since the last apply"
-            )
-        from .pdf_repair import apply_proposals, current_proposals
+        from .pdf_repair import apply_proposals, pinned_proposals
 
-        ledger = [
-            json.loads(line)
-            for line in ledger_path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        current = current_proposals(blocks, ledger)
-        if [item["proposal_id"] for item in current] != list(
-            repairs_section["applied_proposal_ids"]
-        ):
-            raise RuntimeError(
-                "PDF_REPAIR_LEDGER_MISMATCH: applied proposals disagree with the ledger"
-            )
+        try:
+            current = pinned_proposals(root, manifest, blocks)
+        except ValueError as error:
+            raise RuntimeError(str(error)) from error
         applied = apply_proposals(
             blocks,
             current,
