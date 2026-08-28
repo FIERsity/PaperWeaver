@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import json
 import math
 import tempfile
 from collections import deque
@@ -24,7 +23,13 @@ from .pdf_contracts import (
 from .pdf_layout import recover_layout
 from .pdf_markdown import materialize_markdown
 from .pdf_qa import build_qa, render_qa_markdown
-from .storage import atomic_write_bytes, atomic_write_json, atomic_write_text, canonical_json
+from .storage import (
+    atomic_write_bytes,
+    atomic_write_json,
+    atomic_write_text,
+    canonical_json,
+    write_dict_jsonl,
+)
 
 
 def import_pdf(
@@ -359,18 +364,18 @@ def _write_stage(
         for page in run.pages
         for item in page.objects
     ]
-    _write_dict_jsonl(run_root / "raw-objects.jsonl", raw)
-    _write_dict_jsonl(run_root / "base-blocks.jsonl", [item.to_dict() for item in blocks])
-    _write_dict_jsonl(
+    write_dict_jsonl(run_root / "raw-objects.jsonl", raw)
+    write_dict_jsonl(run_root / "base-blocks.jsonl", [item.to_dict() for item in blocks])
+    write_dict_jsonl(
         run_root / "base-relations.jsonl",
         [item.to_dict() for item in _element_relations(blocks)],
     )
-    _write_dict_jsonl(
+    write_dict_jsonl(
         run_root / "object-accounting.jsonl", [item.to_dict() for item in accounting]
     )
-    _write_dict_jsonl(stage / "assets" / "manifest.jsonl", assets)
+    write_dict_jsonl(stage / "assets" / "manifest.jsonl", assets)
     atomic_write_text(stage / "article.md", markdown)
-    _write_dict_jsonl(stage / "article-map.jsonl", [item.to_dict() for item in article_map])
+    write_dict_jsonl(stage / "article-map.jsonl", [item.to_dict() for item in article_map])
     atomic_write_json(stage / "pdf" / "render-tree.json", render_tree)
     atomic_write_json(stage / "pdf" / "qa.json", qa)
     atomic_write_text(stage / "pdf" / "qa.md", render_qa_markdown(qa))
@@ -420,13 +425,6 @@ def _element_relations(blocks: list[PdfBlock]) -> list[PdfRelation]:
             )
         )
     return relations
-
-
-def _write_dict_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
-    atomic_write_text(
-        path,
-        "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in rows),
-    )
 
 
 def _commit_stage(destination: Path, stage: Path, source_sha256: str) -> None:

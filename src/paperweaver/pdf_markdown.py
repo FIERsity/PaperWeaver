@@ -218,7 +218,8 @@ def _render_figure(block: PdfBlock, asset_paths: dict[str, str]) -> list[str]:
 def _render_equation(block: PdfBlock) -> list[str]:
     payload = block.equation or {}
     latex = payload.get("latex")
-    if not latex or not payload.get("latex_verified"):
+    audited = payload.get("latex_source") == "audited"
+    if not latex or not (payload.get("latex_verified") or audited):
         return [block.text or ""]
     number = payload.get("number")
     rendered = f"{latex} \\tag{{{number}}}" if number else latex

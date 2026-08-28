@@ -12,7 +12,7 @@ from .storage import canonical_json
 
 SCHEMA_VERSION = 1
 ADAPTER_SCHEMA_VERSION = "paperweaver-pdf-v1"
-COMPLETE_STATUSES = {"complete", "complete_with_warnings"}
+COMPLETE_STATUSES = {"complete", "complete_with_warnings", "complete_with_repair"}
 ALL_STATUSES = {"fatal", "unsupported", "incomplete", *COMPLETE_STATUSES}
 
 
@@ -97,6 +97,10 @@ def validate_pdf_project(root: Path, *, require_complete: bool) -> str:
     status = manifest["status"]
     if status not in ALL_STATUSES:
         raise ValueError(f"PDF_MANIFEST_INVALID: unknown status {status!r}")
+    if status == "complete_with_repair" and not isinstance(manifest.get("repairs"), dict):
+        raise RuntimeError(
+            "PDF_REPAIR_MANIFEST_INVALID: complete_with_repair requires applied repairs"
+        )
     source = json.loads((source_root / "source.json").read_text(encoding="utf-8"))
     original_digest = sha256_bytes((source_root / "original.pdf").read_bytes())
     if not (
@@ -260,10 +264,62 @@ def validate_pdf_project(root: Path, *, require_complete: bool) -> str:
         asset_paths[asset["asset_id"]] = Path(*relative.parts[1:]).as_posix()
     if any(not set(block.asset_refs) <= asset_ids for block in block_records):
         raise RuntimeError("PDF_ASSET_MANIFEST_INVALID: block asset reference is missing")
+    unresolved_view: list[dict[str, Any]] = blocks
+    view_records = block_records
+    repairs_section = manifest.get("repairs")
+    if repairs_section is not None:
+        if set(repairs_section) != {"ledger_sha256", "applied_proposal_ids", "applied_at"} or not isinstance(
+            repairs_section["applied_proposal_ids"], list
+        ):
+            raise RuntimeError("PDF_REPAIR_MANIFEST_INVALID: repairs section is malformed")
+        ledger_path = root / "state" / "audit-proposals.jsonl"
+        if (
+            not ledger_path.is_file()
+            or sha256_bytes(ledger_path.read_bytes()) != repairs_section["ledger_sha256"]
+        ):
+            raise RuntimeError(
+                "PDF_REPAIR_LEDGER_MISMATCH: repair ledger changed since the last apply"
+            )
+        from .pdf_repair import apply_proposals, current_proposals
+
+        ledger = [
+            json.loads(line)
+            for line in ledger_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        current = current_proposals(blocks, ledger)
+        if [item["proposal_id"] for item in current] != list(
+            repairs_section["applied_proposal_ids"]
+        ):
+            raise RuntimeError(
+                "PDF_REPAIR_LEDGER_MISMATCH: applied proposals disagree with the ledger"
+            )
+        applied = apply_proposals(
+            blocks,
+            current,
+            _repair_region_chars(run_root, blocks, current, policy),
+            policy,
+        )
+        try:
+            view_records = [PdfBlock(**item) for item in applied]
+        except (TypeError, ValueError) as error:
+            raise RuntimeError(f"PDF_LEDGER_SCHEMA_INVALID: {error}") from error
+        for item in applied:
+            if item["kind"] != "equation" or item["status"] != "ok":
+                continue
+            payload = item.get("equation") or {}
+            if not (
+                payload.get("latex")
+                and (payload.get("latex_verified") or payload.get("latex_source") == "audited")
+            ):
+                raise RuntimeError(
+                    "PDF_EQUATION_INVALID: audited equation payload lost its evidence"
+                )
+        unresolved_view = applied
     from .pdf_markdown import materialize_markdown
 
     generated, generated_map, generated_tree = materialize_markdown(
-        block_records, manifest["materialization_id"], asset_paths
+        view_records, manifest["materialization_id"], asset_paths
     )
     if generated.encode() != article:
         raise RuntimeError("PDF_ARTICLE_MATERIALIZATION_MISMATCH: article is not derived from blocks")
@@ -273,7 +329,9 @@ def validate_pdf_project(root: Path, *, require_complete: bool) -> str:
     stored_tree = json.loads((source_root / "pdf" / "render-tree.json").read_text(encoding="utf-8"))
     if stored_tree != generated_tree:
         raise RuntimeError("PDF_RENDER_TREE_MISMATCH: render tree changed")
-    if status in COMPLETE_STATUSES and any(item["status"] == "unresolved" for item in blocks):
+    if status in COMPLETE_STATUSES and any(
+        item["status"] == "unresolved" for item in unresolved_view
+    ):
         raise RuntimeError("PDF_GATE_INVALID: complete manifest contains unresolved blocks")
     if require_complete and status not in COMPLETE_STATUSES:
         raise RuntimeError(
@@ -282,19 +340,26 @@ def validate_pdf_project(root: Path, *, require_complete: bool) -> str:
     return status
 
 
+ARTIFACT_BASE_PATHS = {
+    "backend": "pdf/runs/{run_id}/backend.json",
+    "raw_objects": "pdf/runs/{run_id}/raw-objects.jsonl",
+    "base_blocks": "pdf/runs/{run_id}/base-blocks.jsonl",
+    "base_relations": "pdf/runs/{run_id}/base-relations.jsonl",
+    "object_accounting": "pdf/runs/{run_id}/object-accounting.jsonl",
+    "asset_manifest": "assets/manifest.jsonl",
+    "article_map": "article-map.jsonl",
+    "render_tree": "pdf/render-tree.json",
+    "qa": "pdf/qa.json",
+}
+
+
+def artifact_paths(run_id: str) -> dict[str, str]:
+    """Canonical source-relative paths of the digest-tracked PDF artifacts."""
+    return {name: template.format(run_id=run_id) for name, template in ARTIFACT_BASE_PATHS.items()}
+
+
 def _validate_artifact_digests(source_root: Path, manifest: dict[str, Any]) -> None:
-    run_id = manifest["active_run_id"]
-    expected = {
-        "backend": f"pdf/runs/{run_id}/backend.json",
-        "raw_objects": f"pdf/runs/{run_id}/raw-objects.jsonl",
-        "base_blocks": f"pdf/runs/{run_id}/base-blocks.jsonl",
-        "base_relations": f"pdf/runs/{run_id}/base-relations.jsonl",
-        "object_accounting": f"pdf/runs/{run_id}/object-accounting.jsonl",
-        "asset_manifest": "assets/manifest.jsonl",
-        "article_map": "article-map.jsonl",
-        "render_tree": "pdf/render-tree.json",
-        "qa": "pdf/qa.json",
-    }
+    expected = artifact_paths(manifest["active_run_id"])
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, dict) or set(artifacts) != set(expected):
         raise RuntimeError("PDF_ARTIFACT_MANIFEST_INVALID: artifact digest inventory is incomplete")
@@ -312,6 +377,28 @@ def _validate_artifact_digests(source_root: Path, manifest: dict[str, Any]) -> N
         artifact = source_root / relative
         if not artifact.is_file() or sha256_bytes(artifact.read_bytes()) != item["sha256"]:
             raise RuntimeError(f"PDF_ARTIFACT_DIGEST_MISMATCH: {name} changed")
+
+
+def _repair_region_chars(
+    run_root: Path,
+    blocks: list[dict[str, Any]],
+    proposals: list[dict[str, Any]],
+    policy: dict[str, Any],
+) -> dict[str, list[Any]]:
+    from .pdf_layout import chars_in_bbox
+    from .pdf_repair import page_chars
+
+    blocks_by_id = {block["block_id"]: block for block in blocks}
+    pages = {blocks_by_id[item["block_id"]]["provenance"][0]["page"] for item in proposals}
+    chars_by_page = page_chars(run_root, pages)
+    return {
+        item["block_id"]: chars_in_bbox(
+            chars_by_page[blocks_by_id[item["block_id"]]["provenance"][0]["page"]],
+            blocks_by_id[item["block_id"]]["provenance"][0]["bbox"],
+            policy,
+        )
+        for item in proposals
+    }
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:

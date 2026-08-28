@@ -7,7 +7,13 @@ import json
 import logging
 from pathlib import Path
 
-from .audit import audit_status, export_audit_package, import_audit_proposals, verify_audit_draft
+from .audit import (
+    apply_audit_proposals,
+    audit_status,
+    export_audit_package,
+    import_audit_proposals,
+    verify_audit_draft,
+)
 from .core import import_paper, init_project
 from .pdf_contracts import PdfUnsupportedError, pdf_status
 from .publication import render_translation_pdf
@@ -86,6 +92,10 @@ def parser() -> argparse.ArgumentParser:
         "audit-status", help="Show repair burn-down over unresolved blocks"
     )
     audit_status_cmd.add_argument("project", type=Path)
+    audit_apply = commands.add_parser(
+        "audit-apply", help="Materialize accepted audit proposals into the derived views"
+    )
+    audit_apply.add_argument("project", type=Path)
     return root
 
 
@@ -133,6 +143,8 @@ def run(arguments: list[str] | None = None) -> int:
             return 1
     elif args.command == "audit-status":
         print(json.dumps(audit_status(args.project), ensure_ascii=False, indent=2))
+    elif args.command == "audit-apply":
+        print(json.dumps(apply_audit_proposals(args.project), ensure_ascii=False, indent=2))
     elif args.command == "pdf-status":
         pdf_status(args.project)
         manifest = json.loads(
@@ -151,8 +163,14 @@ def run(arguments: list[str] | None = None) -> int:
 
 
 def _pdf_exit_code(status: str) -> int:
-    return {"complete": 0, "complete_with_warnings": 0, "incomplete": 2,
-            "unsupported": 3, "fatal": 1}[status]
+    return {
+        "complete": 0,
+        "complete_with_warnings": 0,
+        "complete_with_repair": 0,
+        "incomplete": 2,
+        "unsupported": 3,
+        "fatal": 1,
+    }[status]
 
 
 def main() -> None:

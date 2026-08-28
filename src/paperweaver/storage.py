@@ -79,5 +79,12 @@ def atomic_write_bytes(path: Path, value: bytes) -> None:
     os.replace(temporary, path)
 
 
+def write_dict_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
+    atomic_write_text(
+        path,
+        "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in rows),
+    )
+
+
 def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
     atomic_write_text(path, json.dumps(value, ensure_ascii=False, indent=2) + "\n")

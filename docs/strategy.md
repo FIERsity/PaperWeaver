@@ -79,9 +79,10 @@ PDF → [确定性引擎] → 规整 Markdown（已解决部分）
 
 1. ~~度量口径 v2 + floors/targets 分离 + check.sh + CI 闭环~~（已完成，2026-08-27）
 2. ~~audit package 契约 + `audit-export` / `audit-import` / `verify-draft` CLI~~（已完成，2026-08-27；工作单导出、确定性提案复检、append-only 提案账本、burn-down 均已落地）；
-3. `paperweaver-audit` skill MVP + 已接受提案向 `article.md`/render-tree 的确定性
-   物化，首批真实工单 = 语料中无框/跨页表与未决公式，跑通"提案 → 复检 → 物化 →
-   burn-down"闭环；
+3. ~~已接受提案向 `article.md`/render-tree 的确定性物化 + `complete_with_repair`
+   交付状态~~（已完成，2026-08-28：`audit-apply`，视图恒等于 base+账本的可重推导，
+   base 账本不可变）。剩余：`paperweaver-audit` skill MVP——读裁剪图造网格/写
+   LaTeX 的编排知识，首批真实工单 = 语料中无框/跨页表与未决公式；
 4. 引擎确定性战线按 ROI 继续：无框表（acl-tables-2024×18、warwick×9）→ 标题层级
    → 断词/跨页续段；一次只开一条结构战线，每条战线 = policy 参数 + 合成 fixture +
    真实语料对照 + design doc 章节；

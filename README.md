@@ -58,8 +58,11 @@ Unresolved tables and equations can be handed to a model for evidence-bound repa
 paperweaver audit-export my-paper                        # output/audit-package.json
 paperweaver verify-draft my-paper draft.jsonl            # self-check, writes nothing
 paperweaver audit-import my-paper draft.jsonl --model my-model
+paperweaver audit-apply my-paper                         # materialize accepted repairs
 paperweaver audit-status my-paper                        # burn-down and acceptance rate
 ```
+
+`audit-apply` rebuilds `article.md`, the article map, and the render tree from the immutable base run plus the accepted proposals; when the applied view has no unresolved block left, the import rises to `complete_with_repair`, which `segment` accepts like other complete statuses. The base ledger is never modified, and every applied proposal stays recorded in `transformations` and in the manifest `repairs` section.
 
 Proposals never carry content text: a table proposal contributes only grid geometry whose cells the engine rebuilds from the PDF's own characters, and an equation proposal must have every region glyph consumed by balanced, cid-free LaTeX. Every submission is appended to the state ledger with its validation verdict.
 

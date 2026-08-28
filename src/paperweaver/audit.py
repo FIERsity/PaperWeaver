@@ -17,20 +17,38 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .models import AuditProposal
+from .models import AuditProposal, PdfBlock
 from .pdf_backend import RawPdfObject
-from .pdf_contracts import load_policy, stable_id
+from .pdf_contracts import (
+    artifact_paths,
+    load_policy,
+    sha256_bytes,
+    stable_id,
+    validate_pdf_project,
+)
 from .pdf_equation import latex_balanced, latex_char
 from .pdf_layout import chars_in_bbox
+from .pdf_markdown import materialize_markdown
+from .pdf_qa import render_qa_markdown
+from .pdf_repair import (
+    ISSUE_FOR_TYPE,
+    apply_proposals,
+    current_proposals,
+    page_chars,
+    repair_status,
+)
 from .pdf_table import TableGrid, assign_chars_to_cells, verified
-from .storage import append_jsonl, atomic_write_json, read_jsonl
+from .storage import (
+    append_jsonl,
+    atomic_write_json,
+    atomic_write_text,
+    read_jsonl,
+    write_dict_jsonl,
+)
 
 SCHEMA_VERSION = 1
 PROPOSAL_TYPES = {"table_grid", "equation_latex"}
-TARGET_ISSUE_TYPES = {
-    "PDF_TABLE_UNRESOLVED": "table_grid",
-    "PDF_EQUATION_UNRESOLVED": "equation_latex",
-}
+TARGET_ISSUE_TYPES = {issue: kind for kind, issue in ISSUE_FOR_TYPE.items()}
 TABLE_KEYS = {"work_order_id", "type", "grid", "header_rows"}
 EQUATION_KEYS = {"work_order_id", "type", "latex"}
 
@@ -74,8 +92,144 @@ def chars_for_block(root: Path, block_id: str) -> list[RawPdfObject]:
     if block is None:
         raise ValueError(f"AUDIT_INVALID: unknown block {block_id}")
     provenance = block["provenance"][0]
-    chars = _page_chars(state.run_root, {provenance["page"]})[provenance["page"]]
+    chars = page_chars(state.run_root, {provenance["page"]})[provenance["page"]]
     return chars_in_bbox(chars, provenance["bbox"], state.policy)
+
+
+def apply_audit_proposals(root: Path) -> dict[str, Any]:
+    """Materialize every current accepted proposal into the derived views.
+
+    Rewrites ``article.md``, ``article-map.jsonl``, ``render-tree.json``,
+    ``qa.json``/``qa.md`` and the manifest from the immutable base run plus
+    the proposal ledger. The run is idempotent: the same ledger produces
+    byte-identical outputs because ``applied_at`` is derived from the
+    proposals themselves. Base ledgers are never touched.
+    """
+    state = _load_pdf_state(root)
+    manifest_path = root / "source" / "pdf" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    base_status = manifest["status"]
+    if base_status in {"fatal", "unsupported"}:
+        raise ValueError(f"AUDIT_APPLY_INVALID: a {base_status} import cannot be repaired")
+    validate_pdf_project(root, require_complete=False)
+    ledger = _load_proposals(root)
+    current = current_proposals(state.blocks, [item.to_dict() for item in ledger])
+    if not current:
+        raise ValueError(
+            "AUDIT_APPLY_NOTHING: no accepted proposal applies to the current base run"
+        )
+    blocks_by_id = {block["block_id"]: block for block in state.blocks}
+    pages = {
+        blocks_by_id[item["block_id"]]["provenance"][0]["page"] for item in current
+    }
+    chars_by_page = page_chars(state.run_root, pages)
+    region_chars = {
+        item["block_id"]: chars_in_bbox(
+            chars_by_page[blocks_by_id[item["block_id"]]["provenance"][0]["page"]],
+            blocks_by_id[item["block_id"]]["provenance"][0]["bbox"],
+            state.policy,
+        )
+        for item in current
+    }
+    applied = apply_proposals(state.blocks, current, region_chars, state.policy)
+    applied_records = [PdfBlock(**item) for item in applied]
+    asset_paths = {
+        asset_id: Path(*Path(asset["path"]).parts[1:]).as_posix()
+        for asset_id, asset in state.assets.items()
+    }
+    markdown, mapping, tree = materialize_markdown(
+        applied_records, manifest["materialization_id"], asset_paths
+    )
+    new_status = repair_status(applied, base_status)
+    qa = _repair_qa(root, applied, current, new_status)
+    source_root = root / "source"
+    atomic_write_text(source_root / "article.md", markdown)
+    write_dict_jsonl(source_root / "article-map.jsonl", [item.to_dict() for item in mapping])
+    atomic_write_json(source_root / "pdf" / "render-tree.json", tree)
+    atomic_write_json(source_root / "pdf" / "qa.json", qa)
+    atomic_write_text(source_root / "pdf" / "qa.md", render_qa_markdown(qa))
+    ledger_path = root / "state" / "audit-proposals.jsonl"
+    manifest["status"] = new_status
+    manifest["article_sha256"] = sha256_bytes(markdown.encode())
+    manifest["repairs"] = {
+        "ledger_sha256": sha256_bytes(ledger_path.read_bytes()),
+        "applied_proposal_ids": [item["proposal_id"] for item in current],
+        "applied_at": max(item["created_at"] for item in current),
+    }
+    manifest["artifacts"] = {
+        name: {
+            "path": relative,
+            "sha256": sha256_bytes((source_root / relative).read_bytes()),
+        }
+        for name, relative in artifact_paths(manifest["active_run_id"]).items()
+    }
+    atomic_write_json(manifest_path, manifest)
+    tables = sum(item["type"] == "table_grid" for item in current)
+    return {
+        "status": new_status,
+        "applied": len(current),
+        "table_grids": tables,
+        "equation_latex": len(current) - tables,
+    }
+
+
+def _repair_qa(
+    root: Path,
+    applied: list[dict[str, Any]],
+    current: list[dict[str, Any]],
+    new_status: str,
+) -> dict[str, Any]:
+    """Refresh QA for the applied view: honest metrics plus one audit trail issue."""
+    qa = json.loads((root / "source" / "pdf" / "qa.json").read_text(encoding="utf-8"))
+    repaired_ids = {item["block_id"] for item in current}
+    repaired_codes = {ISSUE_FOR_TYPE[item["type"]] for item in current}
+    issues = [
+        issue
+        for issue in qa["issues"]
+        if issue["code"] != "PDF_REPAIR_APPLIED"
+        and not (issue["code"] in repaired_codes and set(issue["block_ids"]) & repaired_ids)
+    ]
+    issues.append(
+        {
+            "issue_id": stable_id("issue", "PDF_REPAIR_APPLIED", *sorted(repaired_ids)),
+            "severity": "warning",
+            "code": "PDF_REPAIR_APPLIED",
+            "message": (
+                f"{len(current)} audited repair proposal(s) applied to the materialized view."
+            ),
+            "block_ids": sorted(repaired_ids),
+            "provenance": [],
+            "asset_refs": [],
+        }
+    )
+    qa["issues"] = sorted(
+        issues, key=lambda item: (item["severity"], item["code"], item["issue_id"])
+    )
+    qa["status"] = new_status
+    qa["metrics"]["verified_tables"] = sum(
+        1
+        for block in applied
+        if block["kind"] == "table"
+        and block["status"] == "ok"
+        and block.get("table")
+        and block["table"].get("structure_verified")
+    )
+    qa["metrics"]["verified_equations"] = sum(
+        1
+        for block in applied
+        if block["kind"] == "equation"
+        and bool(block.get("equation"))
+        and bool(block["equation"].get("latex_verified"))
+    )
+    qa["metrics"]["unresolved_blocks"] = sum(
+        1 for block in applied if block["status"] == "unresolved"
+    )
+    qa["repairs"] = {
+        "tables": sum(item["type"] == "table_grid" for item in current),
+        "equations": sum(item["type"] == "equation_latex" for item in current),
+        "total": len(current),
+    }
+    return qa
 
 
 def audit_status(root: Path) -> dict[str, Any]:
@@ -184,7 +338,7 @@ def _work_orders(state: _PdfState, ledger: list[AuditProposal]) -> list[dict[str
         kind = _target_type(block)
         if kind:
             targets.append((block, kind))
-    chars_by_page = _page_chars(state.run_root, {block["provenance"][0]["page"] for block, _ in targets})
+    chars_by_page = page_chars(state.run_root, {block["provenance"][0]["page"] for block, _ in targets})
     attempts: dict[str, list[AuditProposal]] = {}
     for proposal in ledger:
         attempts.setdefault(proposal.block_id, []).append(proposal)
@@ -261,32 +415,6 @@ def _caption_index(
     return captions
 
 
-def _page_chars(run_root: Path, pages: set[int]) -> dict[int, list[RawPdfObject]]:
-    result: dict[int, list[RawPdfObject]] = {page: [] for page in pages}
-    raw_path = run_root / "raw-objects.jsonl"
-    if not raw_path.exists():
-        return result
-    with raw_path.open(encoding="utf-8") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            raw = json.loads(line)
-            page = raw.get("page")
-            if raw.get("object_kind") == "char" and page in result:
-                result[page].append(
-                    RawPdfObject(
-                        object_ref=raw["object_ref"],
-                        kind=raw["object_kind"],
-                        page=raw["page"],
-                        bbox=raw["bbox"],
-                        payload=raw["payload"],
-                        attrs=raw.get("attrs") or {},
-                        backend_ref=raw.get("backend_ref", ""),
-                    )
-                )
-    return result
-
-
 def _plan_proposals(root: Path, draft: Path, adapter: str, model: str) -> list[AuditProposal]:
     """Validate every draft line; raise on schema errors, record semantic rejects."""
     state = _load_pdf_state(root)
@@ -334,7 +462,7 @@ def _plan_proposals(root: Path, draft: Path, adapter: str, model: str) -> list[A
         else:
             page = block["provenance"][0]["page"]
             if page not in chars_by_page:
-                chars_by_page = _page_chars(state.run_root, {page})
+                chars_by_page = page_chars(state.run_root, {page})
             region_chars = chars_in_bbox(chars_by_page[page], block["provenance"][0]["bbox"], state.policy)
             if raw["type"] == "table_grid":
                 validation = _validate_table_grid(payload, region_chars, state.policy, block["provenance"][0]["bbox"])
@@ -399,6 +527,10 @@ def _validate_table_grid(
     if not isinstance(header_rows, int) or isinstance(header_rows, bool) or header_rows < 0:
         reasons.append("header_rows must be a non-negative integer")
         return {"reject_reasons": reasons}
+    grid = TableGrid(tuple(float(value) for value in x_bounds), tuple(float(value) for value in y_bounds), header_rows)
+    if header_rows >= grid.rows:
+        reasons.append("header_rows must be smaller than the row count")
+        return {"reject_reasons": reasons}
     tolerance = float(policy["table_cell_overlap_tolerance_pt"])
     if (
         x_bounds[0] < bbox[0] - tolerance
@@ -408,9 +540,22 @@ def _validate_table_grid(
     ):
         reasons.append("grid extent leaves the target region bbox")
         return {"reject_reasons": reasons}
-    grid = TableGrid(tuple(float(value) for value in x_bounds), tuple(float(value) for value in y_bounds), header_rows)
-    if header_rows >= grid.rows:
-        reasons.append("header_rows must be smaller than the row count")
+    glyphs = [char for char in region_chars if char.payload.strip()]
+    excluded = sum(
+        1
+        for char in glyphs
+        if not (
+            x_bounds[0] - tolerance <= char.bbox[0]
+            and char.bbox[2] <= x_bounds[-1] + tolerance
+            and y_bounds[0] - tolerance <= char.bbox[1]
+            and char.bbox[3] <= y_bounds[-1] + tolerance
+        )
+    )
+    if excluded:
+        reasons.append(
+            f"grid extent excludes {excluded} of {len(glyphs)} region glyphs; "
+            "every glyph must fall inside the proposed grid"
+        )
         return {"reject_reasons": reasons}
     assignment = assign_chars_to_cells(region_chars, grid, policy)
     if not verified(grid, assignment, policy):

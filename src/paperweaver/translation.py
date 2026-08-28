@@ -329,17 +329,13 @@ def export_translated_markdown(root: Path) -> Path:
 
 def _export_pdf_translated_markdown(root: Path) -> Path:
     from .pdf_contracts import validate_pdf_project
+    from .pdf_repair import applied_view
 
     validate_pdf_project(root, require_complete=True)
     manifest = json.loads(
         (root / "source" / "pdf" / "manifest.json").read_text(encoding="utf-8")
     )
-    run_root = root / "source" / "pdf" / "runs" / manifest["active_run_id"]
-    blocks = [
-        PdfBlock(**json.loads(line))
-        for line in (run_root / "base-blocks.jsonl").read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+    blocks = [PdfBlock(**item) for item in applied_view(root)]
     active = active_translations(
         read_jsonl(root / STATE / "translations.jsonl", TranslationRecord)
     )
