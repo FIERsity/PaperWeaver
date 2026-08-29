@@ -54,6 +54,7 @@ class LayoutLine:
     fontname: str
     page_width: float
     column: str = "full"
+    fragment: bool = False
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,33 @@ def recover_layout(
     page_lines = {
         page.page: _lines_from_chars(page, policy) for page in run.pages
     }
+    fragment_pages: set[int] = set()
+    page_symbol_fonts: dict[int, set[str]] = {}
+    fragment_initial_fonts: dict[int, set[str]] = {}
+
+    def _span(line: LayoutLine) -> tuple[float, float, float, float]:
+        return (
+            round(line.bbox[0], 2),
+            round(line.bbox[1], 2),
+            round(line.bbox[2], 2),
+            round(line.bbox[3], 2),
+        )
+
+    fragment_spans: dict[int, set[tuple[float, float, float, float]]] = {}
+    for page in run.pages:
+        symbol_fonts = _symbol_fonts(page, policy)
+        if not symbol_fonts:
+            continue
+        flags = {
+            _span(line)
+            for line in page_lines[page.page]
+            if _is_equation_fragment_line(line, page, symbol_fonts, policy)
+        }
+        if flags:
+            fragment_spans[page.page] = flags
+            fragment_pages.add(page.page)
+            page_symbol_fonts[page.page] = symbol_fonts
+            fragment_initial_fonts[page.page] = symbol_fonts
     document_tokens = _document_tokens(page_lines)
     artifact_keys = _repeated_artifacts(run.pages, page_lines, policy)
     repeated_visual_refs = _repeated_visual_artifact_refs(run.pages, policy)
@@ -125,6 +153,17 @@ def recover_layout(
             object_ref for equation in equations for object_ref in equation.object_refs
         )
         lines = _lines_from_chars(page, policy, exclude=consumed)
+        flagged = fragment_spans.get(page.page, set())
+        if page.page in fragment_pages and page.page in page_symbol_fonts:
+            extended = page_symbol_fonts[page.page]
+            if extended != fragment_initial_fonts.get(page.page):
+                flagged = {
+                    _span(line)
+                    for line in page_lines[page.page]
+                    if _is_equation_fragment_line(line, page, extended, policy)
+                }
+        if flagged:
+            lines = [replace(line, fragment=_span(line) in flagged) for line in lines]
         artifact_lines = [line for line in lines if _artifact_key(page, line, policy) in artifact_keys]
         content_lines = [line for line in lines if line not in artifact_lines]
         ordered, columns = _reading_order(page, content_lines, policy)
@@ -158,7 +197,20 @@ def recover_layout(
                     f"PDF_{kind.upper()}",
                 )
 
-        paragraphs = _paragraphs(ordered)
+        page_fragments = {id(line) for line in ordered if line.fragment}
+        paragraphs = _paragraphs(ordered, page_fragments)
+        if page.page in fragment_pages:
+            extended = _extend_symbol_fonts(
+                page, page_symbol_fonts[page.page], paragraphs, policy
+            )
+            if extended != page_symbol_fonts[page.page]:
+                page_symbol_fonts[page.page] = extended
+                page_fragments = {
+                    id(line)
+                    for line in ordered
+                    if _is_equation_fragment_line(line, page, extended, policy)
+                }
+                paragraphs = _paragraphs(ordered, page_fragments)
         title_index = (
             _document_title_index(page, paragraphs, document_tokens)
             if page.page == 1
@@ -170,6 +222,8 @@ def recover_layout(
             kind, status, issues = _classify_block(
                 text, paragraph_index == title_index, paragraph, ambiguous_hyphen
             )
+            if all(id(line) in page_fragments for line in paragraph):
+                kind, status, issues = "equation", "unresolved", ["PDF_EQUATION_UNRESOLVED"]
             disposition = "render" if status != "unresolved" else "unresolved_placeholder"
             block = _make_block(
                 source_sha256,
@@ -183,6 +237,10 @@ def recover_layout(
                 issues=issues,
                 text=text,
             )
+            if status == "unresolved" and kind == "equation":
+                block = replace(
+                    block, equation={"latex": None, "number": None, "latex_verified": False}
+                )
             blocks.append(block)
             primary = "unresolved" if status == "unresolved" else "rendered"
             for line in paragraph:
@@ -763,7 +821,96 @@ def _banded_column_order(
     return output
 
 
-def _paragraphs(lines: list[LayoutLine]) -> list[list[LayoutLine]]:
+MATHY_GLYPHS = set(
+    "|(){}[]<>=+−-×⋅·~^_½¼¾ﬀﬁﬂﬃﬄ∂∇∫≈≠≤≥±→←↔"
+)
+
+
+def _symbol_fonts(page: PdfPageObservation, policy: dict[str, Any]) -> set[str]:
+    """Fonts whose payload profile is dominated by math glyphs, plus named math fonts.
+
+    Old TeX subsets (AdvP…, CMMI…) carry no italic/math name marks, so the glyph
+    profile is the reliable signal: a font whose rendered payloads are mostly
+    operators, braces, and overbrace pieces is a math symbol font, whatever its
+    name claims. The threshold lives in the policy so it stays auditable.
+    """
+    threshold = float(policy["math_symbol_font_glyph_ratio"])
+    profile: dict[str, list[str]] = {}
+    for item in page.objects:
+        if item.kind == "char" and item.payload and item.payload.strip():
+            profile.setdefault(str(item.attrs.get("fontname", "")), []).append(item.payload)
+    fonts: set[str] = set()
+    for name, payloads in profile.items():
+        marks = ("italic", "math", "stix", "symbol", "cmmi", "cmsy", "cmex", "msam", "msbm")
+        if any(mark in name.casefold() for mark in marks):
+            fonts.add(name)
+            continue
+        mathy = sum(1 for value in payloads if value in MATHY_GLYPHS)
+        if payloads and mathy / len(payloads) >= threshold:
+            fonts.add(name)
+    return fonts
+
+
+def _is_equation_fragment_line(
+    line: LayoutLine, page: PdfPageObservation, symbol_fonts: set[str], policy: dict[str, Any]
+) -> bool:
+    """A visual row built mostly of math-symbol-font glyphs is equation debris."""
+    minimum = int(policy["math_fragment_min_chars"])
+    share = float(policy["math_fragment_min_share"])
+    refs = set(line.object_refs)
+    chars = [
+        item
+        for item in page.objects
+        if item.kind == "char"
+        and item.payload.strip()
+        and item.object_ref in refs
+    ]
+    if len(chars) < minimum:
+        return False
+    return sum(1 for item in chars if str(item.attrs.get("fontname", "")) in symbol_fonts) / len(chars) >= share
+
+
+def _extend_symbol_fonts(
+    page: PdfPageObservation,
+    symbol_fonts: set[str],
+    paragraphs: list[list[LayoutLine]],
+    policy: dict[str, Any],
+) -> set[str]:
+    """Second pass: mid-profile fonts in the rare band below body-font scale.
+
+    Old-TeX equation-letter fonts (italic letters, digits) have a mixed glyph
+    profile that the 0.7 profile rule cannot separate from prose italics. They
+    are far rarer than the page's body fonts, though, so any font below
+    body-font scale (four times ``math_fragment_body_font_share``) whose math
+    profile is at least ``math_symbol_font_glyph_ratio`` / 2 joins the symbol
+    set. The main body font sits far above that scale, and prose emphasis
+    fonts fail the math-profile test.
+    """
+    share_cap = float(policy["math_fragment_body_font_share"])
+    body_share_cap = share_cap * 4  # fonts used broadly across the page are body fonts
+    profile: dict[str, list[str]] = {}
+    for item in page.objects:
+        if item.kind == "char" and item.payload and item.payload.strip():
+            profile.setdefault(str(item.attrs.get("fontname", "")), []).append(item.payload)
+    total = sum(len(values) for values in profile.values()) or 1
+    extended = set(symbol_fonts)
+    for name, payloads in profile.items():
+        if name in symbol_fonts:
+            continue
+        mathy = sum(1 for value in payloads if value in MATHY_GLYPHS) / len(payloads)
+        share = len(payloads) / total
+        if (
+            mathy >= float(policy["math_symbol_font_glyph_ratio"]) / 2
+            and share < body_share_cap
+        ):
+            extended.add(name)
+    return extended
+
+
+def _paragraphs(
+    lines: list[LayoutLine], fragments: set[int] | None = None
+) -> list[list[LayoutLine]]:
+    fragments = fragments or set()
     if not lines:
         return []
     body_sizes = [line.font_size for line in lines if line.font_size > 0]
@@ -779,6 +926,8 @@ def _paragraphs(lines: list[LayoutLine]) -> list[list[LayoutLine]]:
         previous = current[-1] if current else None
         heading = _heading_candidate_line(line)
         previous_heading = previous is not None and _heading_candidate_line(previous)
+        fragment = id(line) in fragments
+        previous_fragment = previous is not None and id(previous) in fragments
         gap = line.bbox[1] - previous.bbox[3] if previous else 0.0
         indented = line.bbox[0] > base_x_by_column.get(line.column, line.bbox[0]) + body_size
         new = (
@@ -787,6 +936,8 @@ def _paragraphs(lines: list[LayoutLine]) -> list[list[LayoutLine]]:
             or line.column != previous.column
             or heading
             or previous_heading
+            or fragment
+            or previous_fragment
             or gap > max(5.0, body_size * 0.9)
             or abs(line.font_size - previous.font_size) > max(0.8, body_size * 0.12)
             or (indented and previous.text.rstrip().endswith((".", "?", "!", ":")))

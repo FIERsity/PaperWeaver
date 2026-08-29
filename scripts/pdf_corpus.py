@@ -420,7 +420,7 @@ def _pdf_streams(project: Path) -> dict[str, str]:
             continue
         if kind in {"section_heading", "paragraph", "figure_caption", "table_caption"}:
             prose_lines.append(text)
-        elif kind == "equation":
+        elif kind == "equation" and block["status"] == "ok":
             prose_lines.append((block.get("raw_text") or text).strip())
         elif kind == "table" and block["status"] == "ok" and block.get("table"):
             table_lines.extend(" ".join(row) for row in block["table"]["rows"])

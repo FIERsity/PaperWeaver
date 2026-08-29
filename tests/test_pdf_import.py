@@ -1363,6 +1363,51 @@ def test_partial_rule_table_is_honest_fallback(tmp_path: Path) -> None:
     )
 
 
+def test_symbol_font_fragment_lines_become_unresolved_equations(tmp_path: Path) -> None:
+    """Old-TeX debris rows (math glyphs, no '=') must not pollute body prose."""
+    source = tmp_path / "fragments.pdf"
+    document = canvas.Canvas(str(source), pagesize=A4, invariant=True)
+    _, height = A4
+    document.setFont("Helvetica-Bold", 17)
+    document.drawString(42, height - 55, "Fragment Isolation Study")
+    document.setFont("Helvetica-Bold", 11)
+    document.drawString(42, height - 95, "Introduction")
+    document.setFont("Helvetica", 9)
+    document.drawString(42, height - 120, "Body text before the equation debris row explains the model.")
+    document.drawString(42, height - 134, "Body text continues after the debris row and must stay clean.")
+    # a debris row of math glyphs (overbrace pieces), no '=' anywhere. The
+    # glyph-profile rule flags fonts whose payloads are mostly math glyphs,
+    # whatever the font is named.
+    document.setFont("Courier", 9)
+    document.drawString(60, height - 152, "|{{zz}} |{{z}}")
+    document.setFont("Helvetica", 9)
+    document.drawString(42, height - 176, "Final prose paragraph closes the page with clean body text.")
+    document.save()
+    project = _new_project(tmp_path)
+    import_paper(project, source)
+    blocks = _pdf_blocks(project)
+    debris = [
+        block for block in blocks
+        if block["kind"] == "equation" and "|{{" in (block.get("text") or "")
+    ]
+    assert debris, "symbol-font debris row must become an equation block"
+    assert debris[0]["status"] == "unresolved"
+    assert "PDF_EQUATION_UNRESOLVED" in debris[0]["issues"]
+    assert debris[0]["equation"]["latex_verified"] is False
+    prose = [
+        block.get("text", "")
+        for block in blocks
+        if block["kind"] == "paragraph"
+    ]
+    joined = " ".join(prose)
+    assert "|{{" not in joined, "debris must not merge into body paragraphs"
+    assert "Body text before the equation debris row" in joined
+    assert "Body text continues after the debris row" in joined
+    assert "Final prose paragraph closes the page" in joined
+    qa = json.loads((project / "source" / "pdf" / "qa.json").read_text(encoding="utf-8"))
+    assert qa["metrics"]["source_object_accounting_ratio"] == 1.0
+
+
 def test_unresolved_table_region_bbox_covers_content_glyphs(tmp_path: Path) -> None:
     """A short rule must not shrink the honest region: audit carves from this bbox."""
     source = tmp_path / "narrow-rule.pdf"

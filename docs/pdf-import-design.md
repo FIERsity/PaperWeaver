@@ -904,6 +904,8 @@ else:
 
 #### Equation
 
+旧 TeX 数学碎行（无 `=` 的 overbrace/分数残片）按**行级字形剖面**隔离：页内某字体的载荷 ≥`math_symbol_font_glyph_ratio`（0.7）落在 math glyph 集，或其页面占比 < 4×`math_fragment_body_font_share` 且 mathy ≥ 比率/2，即记为 symbol font；非空格字符 ≥`math_fragment_min_share`（0.55）来自 symbol font 的行是 equation fragment 行，前后强制分段并成为 `equation/unresolved` 块（带裁剪与审计工单）。unresolved 方程不进入语义 prose 流，与 JATS disp-formula 同口径。
+
 候选来自关系运算符、数学/斜体字体、baseline/script 变化、续行和右缘编号；含 `=` 的普通正文段落在加权 math/stix/symbol/italic 字体比率低于阈值时按 plain paragraph 处理，不产生 `PDF_EQUATION_UNRESOLVED` 误报。已实现的受限空间解析器只有在每个 glyph 被主式、上下标或 exact `(<digits>)` 编号消费、括号平衡且无 visual overlap 时才写 verified LaTeX 并解除 gate；否则仍保留 raw text、完整 crop 和 unresolved。编号只来自独立源 refs，不让模型补编号。
 
 #### Footnote

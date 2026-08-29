@@ -85,7 +85,9 @@ PDF → [确定性引擎] → 规整 Markdown（已解决部分）
    LaTeX 的编排知识，首批真实工单 = 语料中无框/跨页表与未决公式；
 4. 引擎确定性战线按 ROI 继续：无框表（acl-tables-2024×18、warwick×9）→ 标题层级
    → 断词/跨页续段；一次只开一条结构战线，每条战线 = policy 参数 + 合成 fixture +
-   真实语料对照 + design doc 章节；
+   真实语料对照 + design doc 章节。已完成：表区域 carving v2（规则∪±10pt 字形）、
+   方程碎行行级隔离（旧 TeX 无 `=` 碎行不再污染正文，pcbi-1002377 precision
+   0.508→0.520）。已知未修：双栏页退化为单栏导致的左右行交错合并；
 5. 翻译交付质量随 corpus 每篇 complete/complete-with-repair 顺路跟进；
 6. P4 OCR、P5 第三方 backend 最后。
 
