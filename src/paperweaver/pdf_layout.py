@@ -728,6 +728,11 @@ def _reading_order(
             return sorted(lines, key=lambda item: (item.bbox[1], item.bbox[0])), 3
         cut = _inferred_vertical_gutter(lines, page.width)
         if cut is None:
+            channel = _channel_gutter(page, lines, policy)
+            if channel is not None:
+                lines = _split_fused_lines(page, lines, channel, policy)
+                cut = (channel[0] + channel[1]) / 2
+        if cut is None:
             return sorted(lines, key=lambda item: (item.bbox[1], item.bbox[0])), 1
 
     cut = cut if cut is not None else median(item[0] for item in pairs)
@@ -785,6 +790,162 @@ def _inferred_vertical_gutter(lines: list[LayoutLine], page_width: float) -> flo
         )
         scored.append((score, cut))
     return max(scored)[1] if scored else None
+
+
+def _char_gaps(page: PdfPageObservation, line: LayoutLine) -> list[tuple[float, float]]:
+    """In-line whitespace gaps as ``(center, width)``, from source-grounded chars."""
+    by_ref = {item.object_ref: item for item in page.objects if item.kind == "char"}
+    chars = sorted(
+        (by_ref[ref] for ref in line.object_refs if ref in by_ref),
+        key=lambda item: item.bbox[0],
+    )
+    return [
+        ((left.bbox[2] + right.bbox[0]) / 2, right.bbox[0] - left.bbox[2])
+        for left, right in pairwise(chars)
+    ]
+
+
+def _edge_clusters(lines: list[LayoutLine], right: bool, page_width: float) -> list[tuple[float, int]]:
+    """``(center, count)`` clusters of one side's strong line edges.
+
+    Only strong lines participate (same rule as pair detection: at least 20
+    characters or 18% of the page width), so short marginalia never grounds a
+    cluster.
+    """
+    tolerance = max(1.0, page_width / 600.0)
+    edges: list[float] = []
+    for item in lines:
+        if not (
+            len(item.text) >= 20 or item.bbox[2] - item.bbox[0] >= page_width * 0.18
+        ):
+            continue
+        edges.append(item.bbox[2] if right else item.bbox[0])
+    edges.sort()
+    clusters: list[tuple[float, int]] = []
+    for edge in edges:
+        if clusters and edge - clusters[-1][0] <= tolerance:
+            center, count = clusters.pop()
+            clusters.append(((center + edge) / 2, count + 1))
+        else:
+            clusters.append((edge, 1))
+    return clusters
+
+
+def _channel_gutter(
+    page: PdfPageObservation,
+    lines: list[LayoutLine],
+    policy: dict[str, Any],
+) -> tuple[float, float] | None:
+    """Narrow interior whitespace channel of a fused two-column page.
+
+    Evidence: co-located clusters of strong left-column right edges and
+    right-column left edges, separated by a gap too narrow for pair detection
+    (below ``min_gap``) but wide enough to read as a real gutter. Fused body
+    lines crossing the candidate channel with an in-line gap inside it credit
+    the channel (they are gutter-fused body lines, not spanning elements, so
+    legitimate full-width title/abstract/citation bands above the body do not
+    mask the channel). Runs only after ``_inferred_vertical_gutter`` has
+    declined, so already-working layouts are untouched.
+    """
+    min_gap = max(float(policy["line_split_gap_points"]), page.width * policy["column_gap_ratio"])
+    channel_gap = float(policy["column_channel_min_gap_points"])
+    minimum = int(policy["column_min_shared_lines"])
+    tolerance = float(policy["line_y_tolerance_points"])
+    gaps_by_line = {id(line): _char_gaps(page, line) for line in lines}
+    scored: list[tuple[float, tuple[float, float]]] = []
+    for xr, left_count in _edge_clusters(lines, True, page.width):
+        for xl, right_count in _edge_clusters(lines, False, page.width):
+            gap = xl - xr
+            if not channel_gap <= gap <= min_gap:
+                continue
+            center = (xr + xl) / 2
+            if not page.width * 0.2 <= center <= page.width * 0.8:
+                continue
+            window = max(2.0, (xl - xr) / 4)
+            splittable = sum(
+                1
+                for line in lines
+                if line.bbox[0] < xr - tolerance
+                and line.bbox[2] > xl + tolerance
+                and any(
+                    width >= channel_gap and center - window <= gap_center <= center + window
+                    for gap_center, width in gaps_by_line[id(line)]
+                )
+            )
+            if min(left_count, right_count) < minimum:
+                continue
+            score = min(left_count, right_count) * 3 + left_count + right_count + splittable * 2
+            scored.append((score, (xr, xl)))
+    return max(scored)[1] if scored else None
+
+
+def _split_fused_lines(
+    page: PdfPageObservation,
+    lines: list[LayoutLine],
+    channel: tuple[float, float],
+    policy: dict[str, Any],
+) -> list[LayoutLine]:
+    """Split gutter-fused lines at their widest in-line gap inside the channel.
+
+    Each produced half keeps the source line's flags (``fragment`` etc.)
+    through ``dataclasses.replace``. Lines without a qualifying gap (genuine
+    spanning elements such as title, abstract or citation lines) are returned
+    unchanged, as are halves that would be trivial.
+    """
+    xr, xl = channel
+    cut = (xr + xl) / 2
+    window = max(2.0, (xl - xr) / 4)
+    channel_gap = float(policy["column_channel_min_gap_points"])
+    tolerance = float(policy["line_y_tolerance_points"])
+    by_ref = {item.object_ref: item for item in page.objects if item.kind == "char"}
+    output: list[LayoutLine] = []
+    for line in lines:
+        if not (line.bbox[0] < xr - tolerance and line.bbox[2] > xl + tolerance):
+            output.append(line)
+            continue
+        chars = sorted(
+            (by_ref[ref] for ref in line.object_refs if ref in by_ref),
+            key=lambda item: item.bbox[0],
+        )
+        best_index: int | None = None
+        best_distance = float("inf")
+        for index, (left, right) in enumerate(pairwise(chars)):
+            center = (left.bbox[2] + right.bbox[0]) / 2
+            if right.bbox[0] - left.bbox[2] < channel_gap or abs(center - cut) > window:
+                continue
+            distance = abs(center - cut)
+            if distance < best_distance:
+                best_distance = distance
+                best_index = index + 1
+        if best_index is None:
+            output.append(line)
+            continue
+        parts = (chars[:best_index], chars[best_index:])
+        if any(
+            len(part) < 6
+            or max(item.bbox[2] for item in part) - min(item.bbox[0] for item in part)
+            < page.width * 0.04
+            for part in parts
+        ):
+            output.append(line)
+            continue
+        for part in parts:
+            bbox = [
+                min(item.bbox[0] for item in part),
+                min(item.bbox[1] for item in part),
+                max(item.bbox[2] for item in part),
+                max(item.bbox[3] for item in part),
+            ]
+            output.append(
+                replace(
+                    line,
+                    bbox=bbox,
+                    text=_join_chars(part),
+                    raw_text="".join(item.payload for item in part).strip(),
+                    object_refs=[item.object_ref for item in part],
+                )
+            )
+    return output
 
 
 def _banded_column_order(

@@ -2,9 +2,9 @@
   "guard": 0.002,
   "papers": {
     "pcbi-1002377": {
-      "order_ratio": 0.6253,
-      "precision": 0.5183,
-      "recall": 0.5912
+      "order_ratio": 0.7115,
+      "precision": 0.5905,
+      "recall": 0.6731
     },
     "pcbi-1005331": {
       "order_ratio": 0.9104,
@@ -22,7 +22,7 @@
       "recall": 0.9192
     }
   },
-  "pinned_at": "2026-08-29T14:59:07Z",
+  "pinned_at": "2026-09-01T02:50:35Z",
   "schema_version": 1,
-  "source_run_id": "20260829T014000Z-fragment-v6"
+  "source_run_id": "20260901T024818Z-route-4-3"
 }

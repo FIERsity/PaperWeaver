@@ -235,6 +235,45 @@ def _mixed_band_two_column_pdf(path: Path) -> None:
     document.save()
 
 
+def _narrow_gutter_two_column_pdf(path: Path) -> None:
+    """Two-column page whose ~16pt gutter fuses left/right chars into full lines.
+
+    Left column at x=42 with ~257pt lines (right edge ~299), right column at
+    x=315: the gutter gap (~16pt) is below ``line_split_gap_points`` (24.0) so
+    same-baseline rows fuse, and below pair-detection ``min_gap`` (~30.6) so
+    both old detectors decline. Full-width title and abstract sit above the
+    body band as legitimate spanning elements; a few left-only / right-only
+    rows (unbalanced paragraph ends, as in real journals) build the edge
+    clusters the channel detector reads.
+    """
+    document = canvas.Canvas(str(path), pagesize=A4, invariant=True)
+    _, height = A4
+    document.setFont("Helvetica-Bold", 17)
+    document.drawCentredString(A4[0] / 2, height - 55, "Narrow Gutter Two-Column Study")
+    document.setFont("Helvetica-Bold", 11)
+    document.drawString(42, height - 80, "Abstract")
+    document.setFont("Helvetica", 9)
+    document.drawString(
+        42,
+        height - 95,
+        "Abstract full width line one with enough words to span the entire page "
+        "across both columns and beyond the gutter line.",
+    )
+    left_text = "Left column body line {} with traceable source evidence text."
+    right_text = "Right column body line {} with traceable source evidence text."
+    for row in range(4):
+        y = height - 150 - row * 11
+        document.drawString(42, y, left_text.format(row))
+        document.drawString(315, y, right_text.format(row))
+    for row in range(4, 7):
+        y = height - 150 - row * 11
+        document.drawString(42, y, left_text.format(row))
+    for row in range(7, 10):
+        y = height - 150 - row * 11
+        document.drawString(315, y, right_text.format(row))
+    document.save()
+
+
 def _repeated_visual_header_and_link_pdf(path: Path) -> None:
     document = canvas.Canvas(str(path), pagesize=A4, invariant=True)
     _, height = A4
@@ -462,6 +501,30 @@ def test_two_column_bands_are_split_by_full_width_section_heading(tmp_path: Path
     assert article.index("Lower left paragraph line 3") < article.index(
         "Lower right paragraph line 0"
     )
+
+
+def test_narrow_gutter_two_column_page_is_split_at_the_channel(tmp_path: Path) -> None:
+    source = tmp_path / "narrow-gutter.pdf"
+    _narrow_gutter_two_column_pdf(source)
+    project = _new_project(tmp_path)
+    import_paper(project, source)
+    article = (project / "source" / "article.md").read_text(encoding="utf-8")
+    qa = json.loads((project / "source" / "pdf" / "qa.json").read_text(encoding="utf-8"))
+    assert qa["metrics"]["columns_by_page"]["1"] == 2
+    # the full-width abstract survives the gutter split: its whole phrase stays one line
+    assert any(
+        "span the entire page across both columns and beyond the gutter line." in line
+        for line in article.splitlines()
+    )
+    # left column body reads before right column body, and neither column's text
+    # is interleaved with the other in a shared paragraph
+    assert article.index("Left column body line 6") < article.index(
+        "Right column body line 0"
+    )
+    for line in article.splitlines():
+        assert not (
+            "Left column body line" in line and "Right column body line" in line
+        )
 
 
 def test_repeated_visual_headers_and_link_icons_are_explicit_artifacts(

@@ -21,6 +21,7 @@
   "line_split_gap_points": 24.0,
   "column_min_shared_lines": 3,
   "column_gap_ratio": 0.05,
+  "column_channel_min_gap_points": 8.0,
   "rule_thickness_pt": 1.0,
   "math_symbol_font_glyph_ratio": 0.7,
   "math_fragment_min_chars": 4,
